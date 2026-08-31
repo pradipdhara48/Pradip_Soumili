@@ -1,32 +1,26 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import Image from 'next/image'
 import { motion } from 'framer-motion'
 import { CountdownTimer } from '@/components/countdown-timer'
-import { supabase } from '@/lib/supabaseClient'
 
 export function Hero() {
-  const [data, setData] = useState<any>(null)
-
-  useEffect(() => {
-    async function fetchData() {
-      const { data: conf } = await supabase.from('site_settings').select('*').eq('id', 'main_config').single()
-      if (conf) setData(conf)
-    }
-    fetchData()
-  }, [])
-
-  if (!data) return null 
-
-  // Use the image from database, fallback to the default image
-  const heroImage = data.hero_bg_image || "/images/cover-couple.JPG"
+  // ডাটাবেসের বদলে সরাসরি তথ্য দেওয়া হলো
+  const data = {
+    hero_bg_image: "/images/about-1.JPG", // আপনার public/images ফোল্ডারে থাকা ছবি
+    tagline: "WE ARE GETTING MARRIED",
+    bride: "Soumili",
+    groom: "Pradip",
+    date_label: "Upcoming in 2026",
+    location: "West Bengal, India",
+    date: "2026-12-15T00:00:00"
+  }
 
   return (
     <section id="top" className="relative flex min-h-svh items-center justify-center overflow-hidden">
       <Image
-        src={heroImage}
-        alt="The couple embracing in a sunlit garden"
+        src={data.hero_bg_image}
+        alt="The couple"
         fill
         priority
         sizes="100vw"
