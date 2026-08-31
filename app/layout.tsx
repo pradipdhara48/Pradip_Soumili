@@ -38,7 +38,7 @@ export default function RootLayout({
       lang="en"
       className={`light bg-background ${cormorant.variable} ${jost.variable}`}
     >
-      <body className="font-sans antialiased">
+      <body className="font-sans antialiased bg-[#f6e9df]/20 text-[#2c2420]">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
