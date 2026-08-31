@@ -17,7 +17,7 @@ export function Hero() {
     fetchData()
   }, [])
 
-  const heroImage = data.hero_bg_image || "/images/about-1.JPG"
+  const heroImage = data.hero_bg_image ||
   const tagline = data.tagline || "WE ARE GETTING MARRIED"
   const bride = data.bride || "Soumili"
   const groom = data.groom || "Pradip"
