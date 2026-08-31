@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react'
 import Image from 'next/image'
 import { Reveal } from '@/components/reveal'
 import { supabase } from '@/lib/supabaseClient'
-import { X, ChevronLeft, ChevronRight, BookOpen, ZoomIn } from 'lucide-react'
+import { X, BookOpen, MapPin, ZoomIn, ZoomOut } from 'lucide-react'
+import { motion } from 'framer-motion'
 
 function ClockIcon() { return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" className="h-5 w-5"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" /></svg> }
 function PinIcon() { return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" className="h-5 w-5"><path d="M12 21s-7-5.686-7-11a7 7 0 1 1 14 0c0 5.314-7 11-7 11Z" /><circle cx="12" cy="10" r="2.5" /></svg> }
@@ -13,6 +14,7 @@ export function Details() {
   const [data, setData] = useState<any>({})
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [currentPage, setCurrentPage] = useState(0)
+  const [isZoomed, setIsZoomed] = useState(false)
 
   useEffect(() => {
     async function fetchData() {
@@ -27,7 +29,7 @@ export function Details() {
     { title: data.reception_title || "Reception", time: data.reception_time || "7:00 PM", venue: data.reception_venue || "Venue", address: data.reception_address || "Address" }
   ]
 
-  let parsedCards = [];
+  let parsedCards: string[] = [];
   if (typeof data.invitation_cards === 'string') {
     try { parsedCards = JSON.parse(data.invitation_cards); } catch (e) {}
   } else if (Array.isArray(data.invitation_cards)) {
@@ -59,25 +61,56 @@ export function Details() {
           ))}
         </div>
 
-        <Reveal delay={0.2} className="mt-12 flex flex-col items-center gap-4 text-center">
-          <button type="button" onClick={() => setIsModalOpen(true)} className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-card px-7 py-3 text-xs font-medium uppercase tracking-[0.2em] text-primary transition-all hover:bg-primary/10 hover:scale-[1.03]">
+        <Reveal delay={0.2} className="mt-12 flex flex-col items-center justify-center gap-4 text-center">
+          <button type="button" onClick={() => { setIsModalOpen(true); setIsZoomed(false); }} className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-card px-7 py-3 text-xs font-medium uppercase tracking-[0.2em] text-primary transition-all hover:bg-primary/10 hover:scale-[1.03]">
             <BookOpen className="h-4 w-4" /> Preview Invitation
           </button>
+
+          {data.map_link && (
+            <a href={data.map_link} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3 text-xs font-medium uppercase tracking-[0.2em] text-primary-foreground transition-all hover:opacity-90 hover:scale-[1.03] shadow">
+              <MapPin className="h-4 w-4" /> View on Google Map
+            </a>
+          )}
         </Reveal>
       </div>
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/80 backdrop-blur-md">
-          <div className="relative w-full max-w-lg bg-card border border-border rounded-2xl p-6 shadow-2xl">
-            <button onClick={() => setIsModalOpen(false)} className="absolute right-4 top-4 text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
-            <div className="relative w-full aspect-[3/4.2] mb-4">
-              <Image src={invitationPages[currentPage]} alt="Card" fill className="object-contain" />
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 10 }} 
+            animate={{ opacity: 1, scale: 1, y: 0 }} 
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+            className={`relative w-full bg-card border border-border rounded-2xl p-6 shadow-2xl transition-all duration-300 ${isZoomed ? 'max-w-4xl' : 'max-w-lg'}`}
+          >
+            <div className="absolute right-4 top-4 flex items-center gap-3 z-10">
+              <button onClick={() => setIsZoomed(!isZoomed)} className="text-muted-foreground hover:text-foreground bg-secondary/80 p-1.5 rounded-full transition" title={isZoomed ? "Zoom Out" : "Zoom In"}>
+                {isZoomed ? <ZoomOut className="h-5 w-5" /> : <ZoomIn className="h-5 w-5" />}
+              </button>
+              <button onClick={() => { setIsModalOpen(false); setIsZoomed(false); }} className="text-muted-foreground hover:text-foreground bg-secondary/80 p-1.5 rounded-full transition">
+                <X className="h-5 w-5" />
+              </button>
             </div>
-            <div className="flex justify-between">
-               <button onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage === 0} className="px-4 py-2 border rounded-lg disabled:opacity-50">Prev</button>
-               <button onClick={() => setCurrentPage(p => Math.min(invitationPages.length - 1, p + 1))} disabled={currentPage === invitationPages.length - 1} className="px-4 py-2 border rounded-lg disabled:opacity-50">Next</button>
+            
+            <div className={`relative w-full mb-4 overflow-hidden perspective-1000 transition-all duration-300 ${isZoomed ? 'aspect-[16/10]' : 'aspect-[3/4.2]'}`}>
+              <motion.div 
+                key={currentPage}
+                initial={{ opacity: 0, rotateY: 70, scale: 0.95 }}
+                animate={{ opacity: 1, rotateY: 0, scale: 1 }}
+                transition={{ duration: 0.4, ease: "easeInOut" }}
+                className="relative w-full h-full cursor-pointer"
+                onClick={() => setIsZoomed(!isZoomed)}
+              >
+                <Image src={invitationPages[currentPage]} alt="Card" fill className="object-contain" />
+              </motion.div>
             </div>
-          </div>
+
+            <div className="flex justify-between items-center">
+               <button onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage === 0} className="px-4 py-2 border rounded-lg disabled:opacity-50 text-sm">Prev</button>
+               <span className="text-xs text-muted-foreground">Page {currentPage + 1} of {invitationPages.length}</span>
+               <button onClick={() => setCurrentPage(p => Math.min(invitationPages.length - 1, p + 1))} disabled={currentPage === invitationPages.length - 1} className="px-4 py-2 border rounded-lg disabled:opacity-50 text-sm">Next</button>
+            </div>
+          </motion.div>
         </div>
       )}
     </section>
