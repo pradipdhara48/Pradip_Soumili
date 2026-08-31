@@ -4,7 +4,7 @@ import { Details } from '@/components/sections/details';
 import { Gallery } from '@/components/sections/gallery';
 import { RsvpFooter } from '@/components/sections/rsvp-footer';
 import { SiteNav } from '@/components/site-nav';
-import { FloatingWhatsapp } from '@/components/floating-whatsapp';
+import { FloatingWhatsApp } from '@/components/floating-whatsapp';
 
 export default function Home() {
   return (
@@ -27,8 +27,8 @@ export default function Home() {
       {/* RSVP Form and Footer */}
       <RsvpFooter />
 
-      {/* Floating WhatsApp Quick Action */}
-      <FloatingWhatsapp />
+      {/* Floating WhatsApp Action */}
+      <FloatingWhatsApp />
     </main>
   );
 }
