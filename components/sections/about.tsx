@@ -1,31 +1,17 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import Image from 'next/image'
 import { Reveal } from '@/components/reveal'
-import { supabase } from '@/lib/supabaseClient'
 
 export function About() {
-  const [data, setData] = useState<any>(null)
-
-  useEffect(() => {
-    async function fetchData() {
-      const { data: conf } = await supabase
-        .from('site_settings')
-        .select('story, about_image_1, about_image_2')
-        .eq('id', 'main_config')
-        .single()
-      if (conf) setData(conf)
-    }
-    fetchData()
-  }, [])
-
-  if (!data) return null;
-
-  const story = data.story || [];
-  // ডাটাবেজে ছবি না থাকলে ডিফল্ট ছবি দেখাবে
-  const img1 = data.about_image_1 || "/images/about-1.JPG";
-  const img2 = data.about_image_2 || "/images/about-2.JPG";
+  // ডাটাবেসের বদলে সরাসরি স্টোরি ডেটা দেওয়া হলো
+  const story = [
+    { year: "2023", title: "How We Met", text: "A simple introduction turned into endless conversations and a bond we never expected." },
+    { year: "2024", title: "The Proposal", text: "With the blessings of our families, we decided to take the next beautiful step together." }
+  ];
+  
+  const img1 = "/images/about-1.JPG";
+  const img2 = "/images/about-2.JPG";
 
   return (
     <section id="story" className="relative overflow-hidden py-24 md:py-32">

@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import Image from 'next/image'
 import { Reveal } from '@/components/reveal'
-import { supabase } from '@/lib/supabaseClient'
 import { X, ChevronLeft, ChevronRight, BookOpen, ZoomIn, ZoomOut } from 'lucide-react'
 
 function ClockIcon() {
@@ -25,39 +24,33 @@ function PinIcon() {
 }
 
 export function Details() {
-  const [data, setData] = useState<any>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [currentPage, setCurrentPage] = useState(0)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const [slideDirection, setSlideDirection] = useState<'next' | 'prev'>('next')
   const [isZoomed, setIsZoomed] = useState(false)
 
-  useEffect(() => {
-    async function fetchData() {
-      const { data: conf } = await supabase.from('site_settings').select('*').eq('id', 'main_config').single()
-      if (conf) setData(conf)
-    }
-    fetchData()
-  }, [])
-
-  if (!data) return null
+  // ডাটাবেসের বদলে সরাসরি ইভেন্ট ডেটা দেওয়া হলো
+  const data = {
+    date_label: "December 15",
+    year_label: "2026",
+    ceremony_title: "Wedding Ceremony",
+    ceremony_time: "6:00 PM Onwards",
+    ceremony_venue: "The Grand Venue",
+    ceremony_address: "Kolkata, West Bengal",
+    reception_title: "Reception",
+    reception_time: "7:00 PM Onwards",
+    reception_venue: "The Grand Banquet",
+    reception_address: "Kolkata, West Bengal",
+    map_link: "https://maps.app.goo.gl/ZyzQKJZRsjBA1M326"
+  }
 
   const events = [
     { title: data.ceremony_title, time: data.ceremony_time, venue: data.ceremony_venue, address: data.ceremony_address },
     { title: data.reception_title, time: data.reception_time, venue: data.reception_venue, address: data.reception_address }
   ]
 
-  // Parsing dynamic invitation cards properly
-  let parsedCards = [];
-  if (typeof data.invitation_cards === 'string') {
-    try { parsedCards = JSON.parse(data.invitation_cards); } catch (e) {}
-  } else if (Array.isArray(data.invitation_cards)) {
-    parsedCards = data.invitation_cards;
-  }
-
-  const invitationPages = parsedCards.length > 0 
-    ? parsedCards 
-    : ["/images/card-1.PNG", "/images/card-2.PNG"] // fallback if database is empty
+  const invitationPages = ["/images/card-1.PNG", "/images/card-2.PNG"]
 
   const handleNext = () => {
     if (isTransitioning || currentPage >= invitationPages.length - 1) return
@@ -107,7 +100,7 @@ export function Details() {
 
         <Reveal delay={0.2} className="mt-12 flex flex-col items-center gap-4 text-center">
           <a
-            href={data.map_link || "https://maps.app.goo.gl/ZyzQKJZRsjBA1M326"}
+            href={data.map_link}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3 text-xs font-medium uppercase tracking-[0.2em] text-primary-foreground transition-transform hover:scale-[1.03]"
