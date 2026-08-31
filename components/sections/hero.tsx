@@ -17,7 +17,7 @@ export function Hero() {
     fetchData()
   }, [])
 
-  const heroImage = data.hero_bg_image ||
+  const heroImage = data.hero_bg_image
   const tagline = data.tagline || "WE ARE GETTING MARRIED"
   const bride = data.bride || "Soumili"
   const groom = data.groom || "Pradip"
@@ -26,8 +26,10 @@ export function Hero() {
   const date = data.date || "2026-12-15T00:00:00"
 
   return (
-    <section id="top" className="relative flex min-h-svh items-center justify-center overflow-hidden">
-      <Image src={heroImage} alt="The couple" fill priority sizes="100vw" className="object-cover" />
+    <section id="top" className="relative flex min-h-svh items-center justify-center overflow-hidden bg-[#1c2434]">
+      {heroImage && (
+        <Image src={heroImage} alt="The couple" fill priority sizes="100vw" className="object-cover" />
+      )}
       <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/25 to-black/60" />
 
       <div className="relative z-10 mx-auto flex max-w-3xl flex-col items-center px-6 py-28 text-center text-primary-foreground">
