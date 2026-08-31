@@ -1,25 +1,23 @@
 'use client'
 
 import Image from 'next/image'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Reveal } from '@/components/reveal'
-import { supabase } from '@/lib/supabaseClient'
 
 export function RsvpFooter() {
-  const [data, setData] = useState<any>(null)
   const [sent, setSent] = useState(false)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('Congratulations ❤️')
   const [guestName, setGuestName] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
 
-  useEffect(() => {
-    async function fetchData() {
-      const { data: conf } = await supabase.from('site_settings').select('bride, groom, date_label, location').eq('id', 'main_config').single()
-      if (conf) setData(conf)
-    }
-    fetchData()
-  }, [])
+  // ডাটাবেসের বদলে সরাসরি স্ট্যাটিক ডেটা দেওয়া হলো
+  const data = {
+    bride: "Soumili",
+    groom: "Pradip",
+    date_label: "December 15, 2026",
+    location: "Kolkata, West Bengal"
+  }
 
   const handleInitialClick = (e: React.FormEvent) => {
     e.preventDefault()
@@ -31,40 +29,32 @@ export function RsvpFooter() {
     if (!guestName.trim()) return
     setLoading(true)
 
-    // ১. অ্যাডমিন প্যানেলে দেখার জন্য Supabase ডাটাবেজে সেভ করা
-    const { error } = await supabase.from('rsvps').insert([{
-      name: guestName.trim(),
-      message: message,
-      attending: true, 
-      guests_count: 1
-    }])
-
-    if (!error) {
-      // ২. ইমেইলে নোটিফিকেশন পাওয়ার জন্য আপনার আগের API কলটি ট্রিগার করা
-      try {
-        await fetch('/api/rsvp', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            name: guestName.trim(),
-            message: message,
-          }),
-        })
-      } catch (err) {
-        console.error('Email sending failed:', err)
+    // যেহেতু Supabase কানেক্ট করা নেই, তাই শুধু ইমেইল API কল করা হচ্ছে
+    try {
+      const response = await fetch('/api/rsvp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: guestName.trim(),
+          message: message,
+        }),
+      })
+      
+      if (response.ok) {
+        setIsModalOpen(false)
+        setSent(true)
+      } else {
+        alert('Failed to send message.')
       }
-
-      setIsModalOpen(false)
-      setSent(true)
-    } else {
+    } catch (err) {
+      console.error('Email sending failed:', err)
       alert('Failed to send message.')
     }
+
     setLoading(false)
   }
-
-  if (!data) return null
 
   return (
     <section id="rsvp" className="relative overflow-hidden bg-primary text-primary-foreground">
