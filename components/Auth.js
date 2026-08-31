@@ -248,7 +248,6 @@ export default function Auth() {
     } catch (err) { alert("Error: " + err.message); } finally { setClearingDB(false); }
   };
 
-  // --- handleSignIn ফাংশনটি এখানে সঠিকভাবে যোগ করা হলো ---
   const handleSignIn = async (e) => {
     e.preventDefault();
     setLoading(true); 
@@ -581,8 +580,6 @@ export default function Auth() {
               autoComplete="current-password"
               placeholder="••••••••" 
               value={password} 
-              onChange={(e) => setPassword(e.target.Test)} 
-              value={password}
               onChange={(e) => setPassword(e.target.value)} 
               required 
               className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
