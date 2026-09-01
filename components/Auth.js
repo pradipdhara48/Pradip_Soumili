@@ -298,6 +298,9 @@ export default function Auth() {
     const totalLikes = posts.reduce((acc, p) => acc + (p.likes || 0), 0);
     const totalGuests = rsvps.reduce((acc, r) => acc + (r.guests_count || 1), 0);
 
+    // datetime-local ইনপুটের জন্য YYYY-MM-DDTHH:MM ফরম্যাট নিশ্চিত করা
+    const formattedDateForInput = config.date ? config.date.slice(0, 16) : '';
+
     return (
       <div className="relative flex h-screen w-full bg-[#f1f5f9] text-[#1e293b] font-sans antialiased overflow-hidden">
         {/* Mobile Backdrop Overlay */}
@@ -397,10 +400,27 @@ export default function Auth() {
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Bride Name</label><input type="text" value={config.bride || ''} onChange={(e) => setConfig({ ...config, bride: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Groom Name</label><input type="text" value={config.groom || ''} onChange={(e) => setConfig({ ...config, groom: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                 </div>
+
+                {/* Drop-down Calendar & Clock Picker for Event Date & Time */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div><label className="text-xs font-bold text-gray-600 uppercase">ISO Date</label><input type="text" value={config.date || ''} onChange={(e) => setConfig({ ...config, date: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
+                  <div>
+                    <label className="text-xs font-bold text-gray-600 uppercase flex items-center justify-between">
+                      <span>Event Date & Time (Timer)</span>
+                      <span className="text-[10px] text-blue-600 font-normal">📅 Click to pick</span>
+                    </label>
+                    <input 
+                      type="datetime-local" 
+                      value={formattedDateForInput} 
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setConfig({ ...config, date: val ? `${val}:00` : '' });
+                      }} 
+                      className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-white focus:outline-blue-500 cursor-pointer font-medium text-gray-800" 
+                    />
+                  </div>
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Tagline</label><input type="text" value={config.tagline || ''} onChange={(e) => setConfig({ ...config, tagline: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                 </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Date Label</label><input type="text" value={config.date_label || ''} onChange={(e) => setConfig({ ...config, date_label: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Year Label</label><input type="text" value={config.year_label || ''} onChange={(e) => setConfig({ ...config, year_label: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
