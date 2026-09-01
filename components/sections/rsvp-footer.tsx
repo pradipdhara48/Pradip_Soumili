@@ -41,16 +41,22 @@ export function RsvpFooter() {
     }])
 
     if (!error) {
-      // ২. ইমেইলে নোটিফিকেশন পাওয়ার জন্য API কল করা
+      // ২. সরাসরি ব্রাউজার থেকে EmailJS এপিআই-তে ফেচ রিকোয়েস্ট পাঠানো
       try {
-        await fetch('/api/rsvp', {
+        await fetch('https://api.emailjs.com/api/v1.0/email/send', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            name: guestName.trim(),
-            message: message,
+            service_id: 'service_b1v0s29',
+            template_id: 'template_41grspt',
+            user_id: 'DOoNq6FFo_ZnrqlY-',
+            template_params: {
+              from_name: guestName.trim(),
+              message: message,
+              to_email: 'pradipsoumili48@gmail.com',
+            },
           }),
         })
       } catch (err) {
@@ -65,7 +71,7 @@ export function RsvpFooter() {
     setLoading(false)
   }
 
-  // ফলব্যাক ডেটা (ডাটাবেস লোড না হলে সাইট ব্ল্যাঙ্ক হবে না)
+  // ফলব্যাক ডেটা
   const bride = data.bride || "Soumili"
   const groom = data.groom || "Pradip"
   const date_label = data.date_label || "December 15, 2026"
