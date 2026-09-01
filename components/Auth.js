@@ -126,12 +126,20 @@ export default function Auth() {
     if (!selectedFile) return;
     try {
       setSavingConfig(true);
-      const compressedFile = await compressImage(selectedFile);
-      const fileExt = compressedFile.name.split('.').pop();
+
+      let fileToUpload = selectedFile;
+      let fileExt = selectedFile.name.split('.').pop();
+
+      // Hero background image retains original resolution without compression
+      if (field !== 'hero_bg_image') {
+        fileToUpload = await compressImage(selectedFile);
+        fileExt = fileToUpload.name.split('.').pop();
+      }
+
       const fileName = `${field}_${Date.now()}.${fileExt}`;
       const filePath = `uploads/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage.from('gallery-images').upload(filePath, compressedFile);
+      const { error: uploadError } = await supabase.storage.from('gallery-images').upload(filePath, fileToUpload);
       if (uploadError) throw uploadError;
 
       const { data: { publicUrl } } = supabase.storage.from('gallery-images').getPublicUrl(filePath);
@@ -275,7 +283,7 @@ export default function Auth() {
 
     return (
       <div className="relative flex h-screen w-full bg-[#f1f5f9] text-[#1e293b] font-sans antialiased overflow-hidden">
-        {/* Mobile Backdrop */}
+        {/* Mobile Backdrop Overlay */}
         {isSidebarOpen && (
           <div 
             className="fixed inset-0 z-40 bg-black/50 md:hidden transition-opacity" 
@@ -294,7 +302,7 @@ export default function Auth() {
               <button 
                 type="button" 
                 onClick={() => setIsSidebarOpen(false)} 
-                className="md:hidden text-gray-400 hover:text-white p-1"
+                className="md:hidden text-gray-400 hover:text-white p-1 cursor-pointer"
               >
                 ✕
               </button>
