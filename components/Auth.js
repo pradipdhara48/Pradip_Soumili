@@ -51,6 +51,7 @@ export default function Auth() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [isResetMode, setIsResetMode] = useState(false);
   const [activeMenu, setActiveMenu] = useState('overview');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
@@ -130,7 +131,6 @@ export default function Auth() {
       let fileToUpload = selectedFile;
       let fileExt = selectedFile.name.split('.').pop();
 
-      // Hero background image retains original resolution without compression
       if (field !== 'hero_bg_image') {
         fileToUpload = await compressImage(selectedFile);
         fileExt = fileToUpload.name.split('.').pop();
@@ -265,6 +265,23 @@ export default function Auth() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) setMessage(error.message);
     setLoading(false);
+  };
+
+  const handleResetPasswordRequest = async (e) => {
+    e.preventDefault();
+    if (!email) return alert('Please enter your admin email address.');
+    setLoading(true);
+    setMessage('');
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: typeof window !== 'undefined' ? `${window.location.origin}/adminlogin` : undefined,
+    });
+    setLoading(false);
+    if (error) {
+      setMessage(error.message);
+    } else {
+      alert('Password reset link has been sent to your email! Please check your inbox.');
+      setIsResetMode(false);
+    }
   };
 
   const handleUpdatePassword = async (e) => {
@@ -594,45 +611,92 @@ export default function Auth() {
       <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
         <div className="text-center mb-6">
           <div className="h-12 w-12 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-xl mx-auto mb-3 shadow">⚡</div>
-          <h2 className="text-xl font-bold text-gray-800">Admin Sign In</h2>
-          <p className="text-xs text-gray-400 mt-1">Control and manage your website content</p>
+          <h2 className="text-xl font-bold text-gray-800">
+            {isResetMode ? 'Reset Admin Password' : 'Admin Sign In'}
+          </h2>
+          <p className="text-xs text-gray-400 mt-1">
+            {isResetMode 
+              ? 'Enter your registered email to receive a password reset link' 
+              : 'Control and manage your website content'}
+          </p>
         </div>
         
-        <form onSubmit={handleSignIn} className="space-y-4">
-          <div>
-            <label className="text-xs font-semibold text-gray-600 uppercase">Email</label>
-            <input 
-              type="email" 
-              name="email"
-              autoComplete="email"
-              placeholder="admin@example.com" 
-              value={email} 
-              onChange={(e) => setEmail(e.target.value)} 
-              required 
-              className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
-            />
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-gray-600 uppercase">Password</label>
-            <input 
-              type="password" 
-              name="password"
-              autoComplete="current-password"
-              placeholder="••••••••" 
-              value={password} 
-              onChange={(e) => setPassword(e.target.value)} 
-              required 
-              className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
-            />
-          </div>
-          <button 
-            type="submit" 
-            disabled={loading} 
-            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg transition cursor-pointer"
-          >
-            {loading ? 'Signing In...' : 'Sign In to Dashboard'}
-          </button>
-        </form>
+        {isResetMode ? (
+          <form onSubmit={handleResetPasswordRequest} className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-gray-600 uppercase">Admin Email</label>
+              <input 
+                type="email" 
+                placeholder="admin@example.com" 
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)} 
+                required 
+                className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
+              />
+            </div>
+            <button 
+              type="submit" 
+              disabled={loading} 
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg transition cursor-pointer"
+            >
+              {loading ? 'Sending Link...' : 'Send Reset Link 📧'}
+            </button>
+            <div className="text-center mt-3">
+              <button
+                type="button"
+                onClick={() => { setIsResetMode(false); setMessage(''); }}
+                className="text-xs text-blue-600 hover:underline font-medium cursor-pointer"
+              >
+                ← Back to Login
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handleSignIn} className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-gray-600 uppercase">Email</label>
+              <input 
+                type="email" 
+                name="email"
+                autoComplete="email"
+                placeholder="admin@example.com" 
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)} 
+                required 
+                className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
+              />
+            </div>
+            <div>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-gray-600 uppercase">Password</label>
+                <button
+                  type="button"
+                  onClick={() => { setIsResetMode(true); setMessage(''); }}
+                  className="text-xs text-blue-600 hover:underline font-medium cursor-pointer"
+                >
+                  Forgot password?
+                </button>
+              </div>
+              <input 
+                type="password" 
+                name="password"
+                autoComplete="current-password"
+                placeholder="••••••••" 
+                value={password} 
+                onChange={(e) => setPassword(e.target.value)} 
+                required 
+                className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
+              />
+            </div>
+            <button 
+              type="submit" 
+              disabled={loading} 
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg transition cursor-pointer"
+            >
+              {loading ? 'Signing In...' : 'Sign In to Dashboard'}
+            </button>
+          </form>
+        )}
         {message && <p className="mt-4 text-center text-xs text-rose-500 font-semibold">{message}</p>}
       </div>
     </div>
