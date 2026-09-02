@@ -45,30 +45,45 @@ const compressImage = (file) => {
   });
 };
 
-// নোটিফিকেশন সাউন্ড তৈরি করার সিন্থেসাইজার ফাংশন
+// লাউড ও ক্রিস্প নোটিফিকেশন সাউন্ড সিন্থেসাইজার
 const playNotificationSound = () => {
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!AudioContext) return;
     const ctx = new AudioContext();
 
-    const osc1 = ctx.createOscillator();
-    const gain = ctx.createGain();
+    [784, 1046.5].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const startTime = ctx.currentTime + (idx * 0.12);
 
-    osc1.type = 'sine';
-    osc1.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-    osc1.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, startTime);
 
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+      gain.gain.setValueAtTime(0.8, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.45);
 
-    osc1.connect(gain);
-    gain.connect(ctx.destination);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
 
-    osc1.start(ctx.currentTime);
-    osc1.stop(ctx.currentTime + 0.35);
+      osc.start(startTime);
+      osc.stop(startTime + 0.45);
+    });
   } catch (e) {}
 };
+
+// VAPID কি কনভার্টার হেল্পার ফাংশন
+function urlBase64ToUint8Array(base64String) {
+  if (!base64String) return new Uint8Array();
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
 
 export default function Auth() {
   const [user, setUser] = useState(null);
@@ -111,15 +126,50 @@ export default function Auth() {
   const [selectedTables, setSelectedTables] = useState([]);
   const [clearingDB, setClearingDB] = useState(false);
 
+  // পুশ সাবস্ক্রিপশন ফাংশন (নিরাপদ পারমিশন হ্যান্ডলিং সহ)
+  const registerDeviceForPush = async (userEmail) => {
+    try {
+      if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window) {
+        let permission = Notification.permission;
+        if (permission === 'default') {
+          permission = await Notification.requestPermission();
+        }
+
+        if (permission !== 'granted') {
+          console.warn('Push notification permission not granted:', permission);
+          return;
+        }
+
+        const reg = await navigator.serviceWorker.ready;
+        const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+        
+        if (!vapidKey) return;
+
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidKey)
+          });
+        }
+
+        await fetch('/api/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subscription: sub, email: userEmail })
+        });
+      }
+    } catch (err) {
+      console.warn('Push registration error suppressed:', err.message);
+    }
+  };
+
   useEffect(() => {
     const savedMenu = localStorage.getItem('activeAdminMenu');
     if (savedMenu) setActiveMenu(savedMenu);
 
-    if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'Notification' in window) {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
-      if (Notification.permission === 'default') {
-        Notification.requestPermission().catch(() => {});
-      }
     }
   }, []);
 
@@ -136,6 +186,7 @@ export default function Auth() {
       if (session?.user) {
         fetchAllData();
         fetchNotifications();
+        registerDeviceForPush(session.user.email);
       }
     };
     getSession();
@@ -145,10 +196,11 @@ export default function Auth() {
       if (session?.user) {
         fetchAllData();
         fetchNotifications();
+        registerDeviceForPush(session.user.email);
       }
     });
 
-    // রিয়েলটাইম নোটিফিকেশন লিসেনার
+    // ইন-অ্যাপ রিয়েলটাইম নোটিফিকেশন লিসেনার
     const notifChannel = supabase
       .channel('public:admin_notifications')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'admin_notifications' }, (payload) => {
@@ -156,21 +208,10 @@ export default function Auth() {
         setNotifications(prev => [newNotif, ...prev]);
         playNotificationSound();
         setIncomingAlert(newNotif);
-
-        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-          navigator.serviceWorker.ready.then((registration) => {
-            registration.showNotification(newNotif.title || 'New Notification 🔔', {
-              body: newNotif.description || 'Check admin panel for updates.',
-              icon: '/icon-192x192.png',
-              badge: '/icon-192x192.png',
-              vibrate: [200, 100, 200]
-            });
-          });
-        }
       })
       .subscribe();
 
-    // রিয়েলটাইম কমেন্ট লিসেনার
+    // কমেন্ট সিংক লিসেনার
     const commentChannel = supabase
       .channel('public:comments_admin_sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, async () => {
@@ -437,7 +478,6 @@ export default function Auth() {
 
     return (
       <div className="relative flex h-screen w-full bg-[#f1f5f9] text-[#1e293b] font-sans antialiased overflow-hidden">
-        {/* Mobile Backdrop Overlay */}
         {isSidebarOpen && (
           <div 
             className="fixed inset-0 z-40 bg-black/50 md:hidden transition-opacity" 
@@ -445,7 +485,6 @@ export default function Auth() {
           />
         )}
 
-        {/* Floating Notification Pop-up Toast */}
         {incomingAlert && (
           <div className="fixed bottom-6 right-6 z-50 bg-white border border-gray-200 rounded-2xl shadow-2xl p-4 max-w-sm w-full animate-in slide-in-from-bottom duration-300">
             <div className="flex items-start justify-between gap-3">
@@ -486,7 +525,6 @@ export default function Auth() {
           </div>
         )}
 
-        {/* Sidebar */}
         <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-[#1c2434] text-[#dee4ee] flex flex-col justify-between shrink-0 shadow-2xl transition-transform duration-300 ease-in-out md:static md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
           <div>
             <div className="p-6 border-b border-[#2e3a47] flex items-center justify-between">
@@ -529,7 +567,6 @@ export default function Auth() {
           </div>
         </aside>
 
-        {/* Content Area */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
           <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-8 shrink-0">
             <div className="flex items-center gap-3">
@@ -549,7 +586,6 @@ export default function Auth() {
             <div className="flex items-center gap-4">
               <a href="/" target="_blank" className="text-xs font-semibold text-blue-600 hover:underline shrink-0 hidden sm:block">↗ View Live Website</a>
 
-              {/* Notification Bell Icon */}
               <button 
                 type="button"
                 onClick={() => {
@@ -573,14 +609,10 @@ export default function Auth() {
           </header>
 
           <main className="flex-1 overflow-y-auto p-4 sm:p-8 bg-[#f1f5f9]">
-            {/* Dashboard Overview Cards */}
             {activeMenu === 'overview' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-                  <div 
-                    onClick={() => handleMenuChange('gallery')}
-                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-blue-300 transition group"
-                  >
+                  <div onClick={() => handleMenuChange('gallery')} className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-blue-300 transition group">
                     <div>
                       <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-blue-600 transition">Total Photos</p>
                       <h3 className="text-2xl font-bold mt-1 text-gray-800">{posts.length}</h3>
@@ -588,10 +620,7 @@ export default function Auth() {
                     <span className="text-2xl p-3 bg-blue-50 group-hover:bg-blue-100 rounded-xl transition">📸</span>
                   </div>
 
-                  <div 
-                    onClick={() => handleMenuChange('gallery')}
-                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-rose-300 transition group"
-                  >
+                  <div onClick={() => handleMenuChange('gallery')} className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-rose-300 transition group">
                     <div>
                       <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-rose-600 transition">Total Likes</p>
                       <h3 className="text-2xl font-bold mt-1 text-rose-500">{totalLikes}</h3>
@@ -599,10 +628,7 @@ export default function Auth() {
                     <span className="text-2xl p-3 bg-rose-50 group-hover:bg-rose-100 rounded-xl transition">❤️</span>
                   </div>
 
-                  <div 
-                    onClick={() => handleMenuChange('rsvp')}
-                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-emerald-300 transition group"
-                  >
+                  <div onClick={() => handleMenuChange('rsvp')} className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-emerald-300 transition group">
                     <div>
                       <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-emerald-600 transition">RSVP Responses</p>
                       <h3 className="text-2xl font-bold mt-1 text-emerald-600">{rsvps.length}</h3>
@@ -610,10 +636,7 @@ export default function Auth() {
                     <span className="text-2xl p-3 bg-emerald-50 group-hover:bg-emerald-100 rounded-xl transition">💌</span>
                   </div>
 
-                  <div 
-                    onClick={() => handleMenuChange('comments')}
-                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-indigo-300 transition group"
-                  >
+                  <div onClick={() => handleMenuChange('comments')} className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-indigo-300 transition group">
                     <div>
                       <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-indigo-600 transition">Total Comments</p>
                       <h3 className="text-2xl font-bold mt-1 text-indigo-600">{adminComments.length}</h3>
@@ -808,7 +831,6 @@ export default function Auth() {
               </div>
             )}
 
-            {/* Comments & Analytics Tab */}
             {activeMenu === 'comments' && (
               <div className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm max-w-5xl space-y-4">
                 <div className="border-b pb-3 flex items-center justify-between">
@@ -906,7 +928,6 @@ export default function Auth() {
             )}
           </main>
 
-          {/* Right Slide-over Notification Sidebar */}
           {isNotifDrawerOpen && (
             <div className="fixed inset-0 z-50 overflow-hidden flex justify-end bg-black/40 animate-in fade-in duration-200">
               <div className="w-full max-w-sm bg-white h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
@@ -953,7 +974,6 @@ export default function Auth() {
             </div>
           )}
 
-          {/* Modal: Activity Details & Facebook-style Reply */}
           {selectedPostForDetail && (
             <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
               <div className="bg-white rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">

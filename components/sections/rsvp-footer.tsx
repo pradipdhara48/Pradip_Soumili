@@ -13,7 +13,6 @@ export function RsvpFooter() {
   const [guestName, setGuestName] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
 
-  // ডাটাবেস থেকে ডেটা আনা
   useEffect(() => {
     async function fetchData() {
       const { data: conf } = await supabase
@@ -36,7 +35,7 @@ export function RsvpFooter() {
     if (!guestName.trim()) return
     setLoading(true)
 
-    // ১. অ্যাডমিন প্যানেলে দেখার জন্য Supabase ডাটাবেজে RSVP সেভ করা
+    // ১. Supabase ডাটাবেজে RSVP ইনসার্ট
     const { error } = await supabase.from('rsvps').insert([{
       name: guestName.trim(),
       message: message,
@@ -45,7 +44,7 @@ export function RsvpFooter() {
     }])
 
     if (!error) {
-      // ২. অ্যাডমিন প্যানেলে রিয়েলটাইম নোটিফিকেশন পাঠানো
+      // ২. ইন-অ্যাপ নোটিফিকেশন তৈরি
       try {
         await supabase.from('admin_notifications').insert([{
           type: 'rsvp',
@@ -53,11 +52,22 @@ export function RsvpFooter() {
           description: `"${message.slice(0, 60)}"`,
           post_id: null
         }])
-      } catch (err) {
-        console.error('RSVP notification insert failed:', err)
-      }
+      } catch (err) {}
 
-      // ৩. সরাসরি ব্রাউজার থেকে EmailJS এপিআই-তে ফেচ রিকোয়েস্ট পাঠানো
+      // ৩. ব্যাকগ্রাউন্ড সিস্টেম পুশ নোটিফিকেশন পাঠানো (ব্রাউজার বন্ধ থাকলেও আসবে)
+      try {
+        await fetch('/api/push/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: `New RSVP Wish from ${guestName.trim()} 💌`,
+            message: `"${message.slice(0, 70)}"`,
+            url: '/adminlogin'
+          })
+        })
+      } catch (err) {}
+
+      // ৪. EmailJS দিয়ে ইমেইল সেন্ড[cite: 2]
       try {
         await fetch('https://api.emailjs.com/api/v1.0/email/send', {
           method: 'POST',
@@ -87,7 +97,6 @@ export function RsvpFooter() {
     setLoading(false)
   }
 
-  // ফলব্যাক ডেটা
   const bride = data.bride || "Soumili"
   const groom = data.groom || "Pradip"
   const date_label = data.date_label || "December 15, 2026"
