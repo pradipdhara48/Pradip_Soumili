@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
 const compressImage = (file) => {
@@ -45,6 +45,31 @@ const compressImage = (file) => {
   });
 };
 
+// নোটিফিকেশন সাউন্ড তৈরি করার সিন্থেসাইজার ফাংশন
+const playNotificationSound = () => {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+
+    const osc1 = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    osc1.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+
+    osc1.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc1.start(ctx.currentTime);
+    osc1.stop(ctx.currentTime + 0.35);
+  } catch (e) {}
+};
+
 export default function Auth() {
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState('');
@@ -54,6 +79,13 @@ export default function Auth() {
   const [isResetMode, setIsResetMode] = useState(false);
   const [activeMenu, setActiveMenu] = useState('overview');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // নোটিফিকেশন ও ড্রয়ার স্টেট
+  const [notifications, setNotifications] = useState([]);
+  const [isNotifDrawerOpen, setIsNotifDrawerOpen] = useState(false);
+  const [selectedPostForDetail, setSelectedPostForDetail] = useState(null);
+  const [replyInputs, setReplyInputs] = useState({});
+  const [incomingAlert, setIncomingAlert] = useState(null);
 
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [newPassword, setNewPassword] = useState('');
@@ -75,12 +107,20 @@ export default function Auth() {
   const [caption, setCaption] = useState('');
   const [uploading, setUploading] = useState(false);
   const [rsvps, setRsvps] = useState([]);
+  const [adminComments, setAdminComments] = useState([]);
   const [selectedTables, setSelectedTables] = useState([]);
   const [clearingDB, setClearingDB] = useState(false);
 
   useEffect(() => {
     const savedMenu = localStorage.getItem('activeAdminMenu');
     if (savedMenu) setActiveMenu(savedMenu);
+
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'Notification' in window) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+      if (Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+      }
+    }
   }, []);
 
   const handleMenuChange = (menu) => {
@@ -93,16 +133,70 @@ export default function Auth() {
     const getSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setUser(session?.user ?? null);
-      if (session?.user) fetchAllData();
+      if (session?.user) {
+        fetchAllData();
+        fetchNotifications();
+      }
     };
     getSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
-      if (session?.user) fetchAllData();
+      if (session?.user) {
+        fetchAllData();
+        fetchNotifications();
+      }
     });
-    return () => subscription.unsubscribe();
+
+    // রিয়েলটাইম নোটিফিকেশন লিসেনার
+    const notifChannel = supabase
+      .channel('public:admin_notifications')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'admin_notifications' }, (payload) => {
+        const newNotif = payload.new;
+        setNotifications(prev => [newNotif, ...prev]);
+        playNotificationSound();
+        setIncomingAlert(newNotif);
+
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          navigator.serviceWorker.ready.then((registration) => {
+            registration.showNotification(newNotif.title || 'New Notification 🔔', {
+              body: newNotif.description || 'Check admin panel for updates.',
+              icon: '/icon-192x192.png',
+              badge: '/icon-192x192.png',
+              vibrate: [200, 100, 200]
+            });
+          });
+        }
+      })
+      .subscribe();
+
+    // রিয়েলটাইম কমেন্ট লিসেনার
+    const commentChannel = supabase
+      .channel('public:comments_admin_sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, async () => {
+        const { data: updatedComments } = await supabase
+          .from('comments')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (updatedComments) setAdminComments(updatedComments);
+      })
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+      supabase.removeChannel(notifChannel);
+      supabase.removeChannel(commentChannel);
+    };
   }, []);
+
+  const fetchNotifications = async () => {
+    const { data } = await supabase
+      .from('admin_notifications')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(30);
+    if (data) setNotifications(data);
+  };
 
   const fetchAllData = async () => {
     const { data: conf } = await supabase.from('site_settings').select('*').eq('id', 'main_config').single();
@@ -111,6 +205,42 @@ export default function Auth() {
     if (postData) setPosts(postData || []);
     const { data: rsvpData } = await supabase.from('rsvps').select('*').order('created_at', { ascending: false });
     if (rsvpData) setRsvps(rsvpData || []);
+    const { data: commentsData } = await supabase.from('comments').select('*').order('created_at', { ascending: false });
+    if (commentsData) setAdminComments(commentsData || []);
+  };
+
+  const markNotificationsAsRead = async () => {
+    await supabase.from('admin_notifications').update({ is_read: true }).eq('is_read', false);
+    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+  };
+
+  const handleOpenNotificationDetail = (notif) => {
+    if (notif.post_id) {
+      const targetPost = posts.find(p => p.id === notif.post_id);
+      if (targetPost) {
+        setSelectedPostForDetail(targetPost);
+        return;
+      }
+    }
+    if (notif.type === 'rsvp') {
+      handleMenuChange('rsvp');
+      setIsNotifDrawerOpen(false);
+    }
+  };
+
+  const handleCommentLikeToggle = async (commentId, currentLikes) => {
+    const newCount = (currentLikes || 0) + 1;
+    await supabase.from('comments').update({ likes: newCount }).eq('id', commentId);
+    setAdminComments(prev => prev.map(c => c.id === commentId ? { ...c, likes: newCount } : c));
+  };
+
+  const handleSendReply = async (commentId) => {
+    const replyText = replyInputs[commentId]?.trim();
+    if (!replyText) return;
+
+    await supabase.from('comments').update({ reply: replyText }).eq('id', commentId);
+    setAdminComments(prev => prev.map(c => c.id === commentId ? { ...c, reply: replyText } : c));
+    setReplyInputs(prev => ({ ...prev, [commentId]: '' }));
   };
 
   const handleSaveConfig = async (e) => {
@@ -127,7 +257,6 @@ export default function Auth() {
     if (!selectedFile) return;
     try {
       setSavingConfig(true);
-
       let fileToUpload = selectedFile;
       let fileExt = selectedFile.name.split('.').pop();
 
@@ -232,6 +361,7 @@ export default function Auth() {
       const pathParts = imageUrl.split('gallery-images/');
       if (pathParts[1]) await supabase.storage.from('gallery-images').remove([pathParts[1]]);
       setPosts(posts.filter(p => p.id !== id));
+      if (selectedPostForDetail?.id === id) setSelectedPostForDetail(null);
     } catch (err) { alert('Failed to delete'); }
   };
 
@@ -252,6 +382,7 @@ export default function Auth() {
         await supabase.from('posts').delete().not('id', 'is', null);
       }
       if (selectedTables.includes('rsvps')) await supabase.from('rsvps').delete().not('id', 'is', null);
+      if (selectedTables.includes('comments')) await supabase.from('comments').delete().not('id', 'is', null);
 
       alert("Selected databases cleared successfully!");
       setSelectedTables([]); fetchAllData();
@@ -297,9 +428,12 @@ export default function Auth() {
   if (user) {
     const totalLikes = posts.reduce((acc, p) => acc + (p.likes || 0), 0);
     const totalGuests = rsvps.reduce((acc, r) => acc + (r.guests_count || 1), 0);
-
-    // datetime-local ইনপুটের জন্য YYYY-MM-DDTHH:MM ফরম্যাট নিশ্চিত করা
     const formattedDateForInput = config.date ? config.date.slice(0, 16) : '';
+    const unreadCount = notifications.filter(n => !n.is_read).length;
+
+    const postSpecificComments = selectedPostForDetail 
+      ? adminComments.filter(c => c.post_id === selectedPostForDetail.id)
+      : [];
 
     return (
       <div className="relative flex h-screen w-full bg-[#f1f5f9] text-[#1e293b] font-sans antialiased overflow-hidden">
@@ -309,6 +443,47 @@ export default function Auth() {
             className="fixed inset-0 z-40 bg-black/50 md:hidden transition-opacity" 
             onClick={() => setIsSidebarOpen(false)}
           />
+        )}
+
+        {/* Floating Notification Pop-up Toast */}
+        {incomingAlert && (
+          <div className="fixed bottom-6 right-6 z-50 bg-white border border-gray-200 rounded-2xl shadow-2xl p-4 max-w-sm w-full animate-in slide-in-from-bottom duration-300">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🔔</span>
+                <h4 className="font-bold text-sm text-gray-800">New Notification</h4>
+              </div>
+              <button 
+                onClick={() => setIncomingAlert(null)}
+                className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs font-semibold text-gray-700 mt-2">{incomingAlert.title}</p>
+            <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{incomingAlert.description}</p>
+            <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setIncomingAlert(null)}
+                className="px-3 py-1.5 text-xs text-gray-500 font-semibold hover:bg-gray-100 rounded-lg cursor-pointer"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIncomingAlert(null);
+                  setIsNotifDrawerOpen(true);
+                  markNotificationsAsRead();
+                  handleOpenNotificationDetail(incomingAlert);
+                }}
+                className="px-4 py-1.5 text-xs bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow cursor-pointer"
+              >
+                View
+              </button>
+            </div>
+          </div>
         )}
 
         {/* Sidebar */}
@@ -335,13 +510,14 @@ export default function Auth() {
               <button onClick={() => handleMenuChange('story')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'story' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}>📖 Our Love Story</button>
               <button onClick={() => handleMenuChange('gallery')} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'gallery' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}><div className="flex items-center gap-3">📸 Live Feed & Photos</div><span className="text-xs bg-blue-600 px-2 py-0.5 rounded-full text-white">{posts.length}</span></button>
               <button onClick={() => handleMenuChange('rsvp')} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'rsvp' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}><div className="flex items-center gap-3">💌 RSVP Guests</div><span className="text-xs bg-emerald-600 px-2 py-0.5 rounded-full text-white">{rsvps.length}</span></button>
+              <button onClick={() => handleMenuChange('comments')} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'comments' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}><div className="flex items-center gap-3">💬 Comments & Logs</div><span className="text-xs bg-indigo-600 px-2 py-0.5 rounded-full text-white">{adminComments.length}</span></button>
               <button onClick={() => handleMenuChange('database')} className={`w-full mt-4 flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'database' ? 'bg-rose-600 text-white shadow-sm' : 'text-rose-400 hover:bg-rose-500/20 hover:text-rose-300'}`}><div className="flex items-center gap-3">🧹 Clean Database</div></button>
             </nav>
           </div>
           
           <div className="relative p-4 border-t border-[#2e3a47]">
             {isUserMenuOpen && (
-              <div className="absolute bottom-full left-4 mb-2 w-56 bg-[#2a3441] border border-[#3a4754] rounded-xl shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
+              <div className="absolute bottom-full left-4 mb-2 w-56 bg-[#2a3441] border border-[#3a4754] rounded-xl shadow-2xl overflow-hidden z-50">
                 <button onClick={() => { handleMenuChange('settings'); setIsUserMenuOpen(false); }} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-gray-300 hover:text-white hover:bg-[#333a48] transition-colors cursor-pointer">⚙️ Account Settings</button>
                 <button onClick={() => supabase.auth.signOut()} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-rose-400 hover:text-white hover:bg-rose-600 transition-colors cursor-pointer">🚪 Sign Out</button>
               </div>
@@ -354,7 +530,7 @@ export default function Auth() {
         </aside>
 
         {/* Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
           <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-8 shrink-0">
             <div className="flex items-center gap-3">
               <button 
@@ -369,17 +545,81 @@ export default function Auth() {
               </button>
               <h2 className="text-base sm:text-lg font-bold text-gray-800 capitalize truncate">{activeMenu.replace('_', ' ')}</h2>
             </div>
-            <a href="/" target="_blank" className="text-xs font-semibold text-blue-600 hover:underline shrink-0">↗ View Live Website</a>
+
+            <div className="flex items-center gap-4">
+              <a href="/" target="_blank" className="text-xs font-semibold text-blue-600 hover:underline shrink-0 hidden sm:block">↗ View Live Website</a>
+
+              {/* Notification Bell Icon */}
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsNotifDrawerOpen(true);
+                  markNotificationsAsRead();
+                }}
+                className="relative p-2 rounded-full text-gray-600 hover:bg-gray-100 transition cursor-pointer"
+                aria-label="Notifications"
+              >
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                {unreadCount > 0 && (
+                  <span className="absolute top-1 right-1 h-5 w-5 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center border-2 border-white animate-pulse">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+            </div>
           </header>
 
           <main className="flex-1 overflow-y-auto p-4 sm:p-8 bg-[#f1f5f9]">
+            {/* Dashboard Overview Cards */}
             {activeMenu === 'overview' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-                  <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between"><div><p className="text-xs text-gray-500 font-medium uppercase">Total Photos</p><h3 className="text-2xl font-bold mt-1">{posts.length}</h3></div><span className="text-2xl p-3 bg-blue-50 rounded-xl">📸</span></div>
-                  <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between"><div><p className="text-xs text-gray-500 font-medium uppercase">Total Likes</p><h3 className="text-2xl font-bold mt-1 text-rose-500">{totalLikes}</h3></div><span className="text-2xl p-3 bg-rose-50 rounded-xl">❤️</span></div>
-                  <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between"><div><p className="text-xs text-gray-500 font-medium uppercase">RSVP Responses</p><h3 className="text-2xl font-bold mt-1 text-emerald-600">{rsvps.length}</h3></div><span className="text-2xl p-3 bg-emerald-50 rounded-xl">💌</span></div>
-                  <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between"><div><p className="text-xs text-gray-500 font-medium uppercase">Total Guests</p><h3 className="text-2xl font-bold mt-1 text-indigo-600">{totalGuests}</h3></div><span className="text-2xl p-3 bg-indigo-50 rounded-xl">👥</span></div>
+                  <div 
+                    onClick={() => handleMenuChange('gallery')}
+                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-blue-300 transition group"
+                  >
+                    <div>
+                      <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-blue-600 transition">Total Photos</p>
+                      <h3 className="text-2xl font-bold mt-1 text-gray-800">{posts.length}</h3>
+                    </div>
+                    <span className="text-2xl p-3 bg-blue-50 group-hover:bg-blue-100 rounded-xl transition">📸</span>
+                  </div>
+
+                  <div 
+                    onClick={() => handleMenuChange('gallery')}
+                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-rose-300 transition group"
+                  >
+                    <div>
+                      <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-rose-600 transition">Total Likes</p>
+                      <h3 className="text-2xl font-bold mt-1 text-rose-500">{totalLikes}</h3>
+                    </div>
+                    <span className="text-2xl p-3 bg-rose-50 group-hover:bg-rose-100 rounded-xl transition">❤️</span>
+                  </div>
+
+                  <div 
+                    onClick={() => handleMenuChange('rsvp')}
+                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-emerald-300 transition group"
+                  >
+                    <div>
+                      <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-emerald-600 transition">RSVP Responses</p>
+                      <h3 className="text-2xl font-bold mt-1 text-emerald-600">{rsvps.length}</h3>
+                    </div>
+                    <span className="text-2xl p-3 bg-emerald-50 group-hover:bg-emerald-100 rounded-xl transition">💌</span>
+                  </div>
+
+                  <div 
+                    onClick={() => handleMenuChange('comments')}
+                    className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-indigo-300 transition group"
+                  >
+                    <div>
+                      <p className="text-xs text-gray-500 font-medium uppercase group-hover:text-indigo-600 transition">Total Comments</p>
+                      <h3 className="text-2xl font-bold mt-1 text-indigo-600">{adminComments.length}</h3>
+                    </div>
+                    <span className="text-2xl p-3 bg-indigo-50 group-hover:bg-indigo-100 rounded-xl transition">💬</span>
+                  </div>
                 </div>
               </div>
             )}
@@ -387,21 +627,14 @@ export default function Auth() {
             {activeMenu === 'couple_hero' && (
               <form onSubmit={handleSaveConfig} className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm space-y-5 max-w-3xl">
                 <h3 className="text-base font-bold border-b pb-3 text-gray-800">Couple & Hero Section</h3>
-                
                 <div className="bg-green-50 p-4 rounded-xl border border-green-100 mb-2">
-                  <label className="text-xs font-bold text-green-800 uppercase flex items-center gap-2">
-                    <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.006c.106.005.249-.04.39.298.144.347.491 1.2.534 1.287.043.087.072.188.014.304-.058.116-.087.188-.173.289l-.26.304c-.087.086-.177.18-.076.334.101.154.453.726.963 1.154.658.553 1.218.728 1.378.814.16.086.253.072.347-.029l.482-.601c.116-.145.231-.116.362-.072.13.043.823.391.968.462.145.072.246.108.282.166.036.058.036.333-.108.738z" /><path d="M12.031 2C6.5 2 2 6.5 2 12.034c0 1.77.466 3.5 1.348 5.035L2 22l5.084-1.319A9.957 9.957 0 0012.031 22c5.53 0 10.031-4.5 10.031-10.034C22.062 6.5 17.56 2 12.031 2zm0 18.232c-1.48 0-2.932-.381-4.198-1.103l-.3-.173-3.118.81.828-3.033-.196-.307A8.256 8.256 0 013.73 12.034c0-4.57 3.721-8.293 8.301-8.293 4.58 0 8.302 3.723 8.302 8.293 0 4.57-3.722 8.293-8.302 8.293z" /></svg>
-                    WhatsApp Contact Number
-                  </label>
+                  <label className="text-xs font-bold text-green-800 uppercase flex items-center gap-2">WhatsApp Contact Number</label>
                   <input type="text" placeholder="+91 9876543210" value={config.whatsapp_number || ''} onChange={(e) => setConfig({ ...config, whatsapp_number: e.target.value })} className="w-full mt-2 p-2.5 border rounded-lg text-sm bg-white focus:outline-green-500" />
                 </div>
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Bride Name</label><input type="text" value={config.bride || ''} onChange={(e) => setConfig({ ...config, bride: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Groom Name</label><input type="text" value={config.groom || ''} onChange={(e) => setConfig({ ...config, groom: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                 </div>
-
-                {/* Drop-down Calendar & Clock Picker for Event Date & Time */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs font-bold text-gray-600 uppercase flex items-center justify-between">
@@ -420,7 +653,6 @@ export default function Auth() {
                   </div>
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Tagline</label><input type="text" value={config.tagline || ''} onChange={(e) => setConfig({ ...config, tagline: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                 </div>
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Date Label</label><input type="text" value={config.date_label || ''} onChange={(e) => setConfig({ ...config, date_label: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
                   <div><label className="text-xs font-bold text-gray-600 uppercase">Year Label</label><input type="text" value={config.year_label || ''} onChange={(e) => setConfig({ ...config, year_label: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50 focus:bg-white" /></div>
@@ -440,12 +672,7 @@ export default function Auth() {
                       <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                         <span className="text-white text-xs font-semibold">Change Hero Image</span>
                       </div>
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        className="hidden" 
-                        onChange={(e) => handleImageUpload(e, 'hero_bg_image')} 
-                      />
+                      <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'hero_bg_image')} />
                     </label>
                   </div>
                 </div>
@@ -456,7 +683,6 @@ export default function Auth() {
                     {[1, 2, 3].map((num) => (
                       <div key={num} className="p-3 border border-dashed border-gray-300 rounded-xl text-center bg-gray-50 group">
                         <p className="text-xs font-semibold text-gray-500 mb-2">Image {num}</p>
-                        
                         <label className="relative w-full h-24 cursor-pointer block rounded-lg overflow-hidden shadow-sm bg-white mb-2">
                           {config[`home_gallery_${num}`] ? (
                             <img src={config[`home_gallery_${num}`]} alt="" className="w-full h-full object-cover" />
@@ -466,12 +692,7 @@ export default function Auth() {
                           <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                             <span className="text-white text-xs font-semibold">Change</span>
                           </div>
-                          <input 
-                            type="file" 
-                            accept="image/*" 
-                            className="hidden" 
-                            onChange={(e) => handleImageUpload(e, `home_gallery_${num}`)} 
-                          />
+                          <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, `home_gallery_${num}`)} />
                         </label>
                       </div>
                     ))}
@@ -484,12 +705,10 @@ export default function Auth() {
             {activeMenu === 'events' && (
               <form onSubmit={handleSaveConfig} className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm space-y-6 max-w-4xl">
                 <h3 className="text-base font-bold border-b pb-3 text-gray-800">Ceremony & Reception Details</h3>
-                
                 <div>
                   <label className="text-xs font-bold text-gray-600 uppercase">Google Map Link</label>
                   <input type="text" placeholder="https://maps.app.goo.gl/..." value={config.map_link || ''} onChange={(e) => setConfig({ ...config, map_link: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50" />
                 </div>
-
                 <div className="p-4 bg-gray-50 rounded-xl border space-y-3"><h4 className="font-bold text-sm text-blue-600">The Ceremony</h4><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><input type="text" placeholder="Title" value={config.ceremony_title || ''} onChange={(e) => setConfig({ ...config, ceremony_title: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Time" value={config.ceremony_time || ''} onChange={(e) => setConfig({ ...config, ceremony_time: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /></div><input type="text" placeholder="Venue Name" value={config.ceremony_venue || ''} onChange={(e) => setConfig({ ...config, ceremony_venue: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Address" value={config.ceremony_address || ''} onChange={(e) => setConfig({ ...config, ceremony_address: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /></div>
                 <div className="p-4 bg-gray-50 rounded-xl border space-y-3"><h4 className="font-bold text-sm text-indigo-600">The Reception</h4><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><input type="text" placeholder="Title" value={config.reception_title || ''} onChange={(e) => setConfig({ ...config, reception_title: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Time" value={config.reception_time || ''} onChange={(e) => setConfig({ ...config, reception_time: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /></div><input type="text" placeholder="Venue Name" value={config.reception_venue || ''} onChange={(e) => setConfig({ ...config, reception_venue: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Address" value={config.reception_address || ''} onChange={(e) => setConfig({ ...config, reception_address: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /></div>
                 
@@ -501,33 +720,18 @@ export default function Auth() {
                       <input type="file" accept="image/*" className="hidden" onChange={handleAddInvCard} />
                     </label>
                   </div>
-                  
                   <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-4">
                     {(config.invitation_cards || []).map((url, idx) => (
                       <div key={idx} className="relative p-2 border border-gray-200 rounded-lg bg-gray-50 flex flex-col items-center group">
                         <p className="text-[10px] font-bold text-gray-500 mb-2 w-full text-left">Page {idx + 1}</p>
-                        
                         <label className="relative w-full h-40 cursor-pointer block rounded-md overflow-hidden shadow-sm border border-gray-200 bg-white">
                           <img src={url} alt="" className="w-full h-full object-contain" />
                           <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                             <span className="text-white text-xs font-semibold">Change Image</span>
                           </div>
-                          <input 
-                            type="file" 
-                            accept="image/*" 
-                            className="hidden" 
-                            onChange={(e) => handleUpdateInvCard(e, idx)} 
-                          />
+                          <input type="file" accept="image/*" className="hidden" onChange={(e) => handleUpdateInvCard(e, idx)} />
                         </label>
-
-                        <button 
-                          type="button" 
-                          onClick={() => handleRemoveInvCard(idx)} 
-                          className="absolute -top-2 -right-2 bg-white border border-gray-200 rounded-full h-6 w-6 flex items-center justify-center shadow-md hover:bg-rose-50 text-rose-500 text-xs cursor-pointer transition z-10"
-                          aria-label="Remove page"
-                        >
-                          ❌
-                        </button>
+                        <button type="button" onClick={() => handleRemoveInvCard(idx)} className="absolute -top-2 -right-2 bg-white border border-gray-200 rounded-full h-6 w-6 flex items-center justify-center shadow-md hover:bg-rose-50 text-rose-500 text-xs cursor-pointer transition z-10">❌</button>
                       </div>
                     ))}
                   </div>
@@ -553,18 +757,12 @@ export default function Auth() {
                           <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                             <span className="text-white text-xs font-semibold">Change</span>
                           </div>
-                          <input 
-                            type="file" 
-                            accept="image/*" 
-                            className="hidden" 
-                            onChange={(e) => handleImageUpload(e, `about_image_${num}`)} 
-                          />
+                          <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, `about_image_${num}`)} />
                         </label>
                       </div>
                     ))}
                   </div>
                 </div>
-
                 <div className="flex items-center justify-between pb-3 pt-2">
                   <h3 className="text-base font-bold text-gray-800">Our Story Timeline</h3>
                   <button type="button" onClick={addStoryTimeline} className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg font-semibold hover:bg-blue-700 cursor-pointer">+ Add New Milestone</button>
@@ -583,7 +781,16 @@ export default function Auth() {
                 <form onSubmit={handleUpload} className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm space-y-4"><h3 className="text-base font-bold text-gray-800">Upload to Live Feed</h3><input type="file" accept="image/*" onChange={(e) => setFile(e.target.files[0])} required className="text-sm w-full" /><textarea placeholder="Write a sweet caption..." value={caption} onChange={(e) => setCaption(e.target.value)} rows={2} className="w-full p-2.5 border rounded-lg text-sm bg-gray-50" /><button type="submit" disabled={uploading} className="w-full sm:w-auto px-5 py-2.5 bg-blue-600 text-white rounded-lg text-xs font-semibold shadow cursor-pointer">{uploading ? 'Uploading...' : 'Publish Photo 🚀'}</button></form>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                   {posts.map((post) => (
-                    <div key={post.id} className="bg-white border rounded-xl overflow-hidden shadow-sm flex flex-col justify-between"><img src={post.image_url} alt="" className="w-full h-44 object-cover" /><div className="p-3"><p className="text-xs font-semibold text-gray-800 truncate">{post.caption || 'No caption'}</p><div className="flex items-center justify-between mt-3"><span className="text-xs text-rose-500 font-bold">❤️ {post.likes || 0}</span><button onClick={() => handleDeletePost(post.id, post.image_url)} className="text-xs text-rose-600 hover:bg-rose-50 px-2 py-1 rounded cursor-pointer font-medium">Delete</button></div></div></div>
+                    <div key={post.id} className="bg-white border rounded-xl overflow-hidden shadow-sm flex flex-col justify-between cursor-pointer" onClick={() => setSelectedPostForDetail(post)}>
+                      <img src={post.image_url} alt="" className="w-full h-44 object-cover" />
+                      <div className="p-3">
+                        <p className="text-xs font-semibold text-gray-800 truncate">{post.caption || 'No caption'}</p>
+                        <div className="flex items-center justify-between mt-3">
+                          <span className="text-xs text-rose-500 font-bold">❤️ {post.likes || 0}</span>
+                          <button onClick={(e) => { e.stopPropagation(); handleDeletePost(post.id, post.image_url); }} className="text-xs text-rose-600 hover:bg-rose-50 px-2 py-1 rounded cursor-pointer font-medium">Delete</button>
+                        </div>
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -601,10 +808,88 @@ export default function Auth() {
               </div>
             )}
 
+            {/* Comments & Analytics Tab */}
+            {activeMenu === 'comments' && (
+              <div className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm max-w-5xl space-y-4">
+                <div className="border-b pb-3 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-bold text-gray-800">User Comments & Device Analytics</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">Approve comments to make them public or delete unwanted ones.</p>
+                  </div>
+                  <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full">
+                    Total: {adminComments.length}
+                  </span>
+                </div>
+
+                <div className="space-y-4">
+                  {adminComments.map((comment) => (
+                    <div key={comment.id} className="p-4 border border-gray-200 rounded-xl bg-gray-50 flex flex-col sm:flex-row items-start justify-between gap-4">
+                      <div className="space-y-2 flex-1">
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-bold text-gray-900">{comment.name}</h4>
+                          <span className="text-[11px] text-gray-400">• {new Date(comment.created_at).toLocaleString()}</span>
+                          {comment.approved ? (
+                            <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">● Public</span>
+                          ) : (
+                            <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full">⏳ Pending</span>
+                          )}
+                        </div>
+
+                        <p className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-100 shadow-xs font-medium leading-relaxed">
+                          "{comment.message}"
+                        </p>
+
+                        {comment.reply && (
+                          <div className="bg-blue-50/60 p-2.5 rounded-lg border border-blue-100 text-xs ml-4">
+                            <span className="font-bold text-blue-700">👑 Admin Reply:</span>
+                            <p className="text-gray-700 mt-0.5">{comment.reply}</p>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
+                          <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md border border-blue-200 font-mono">📱 {comment.device || 'Unknown'}</span>
+                          <span className="bg-purple-50 text-purple-700 px-2.5 py-1 rounded-md border border-purple-200 font-mono">🌐 IP: {comment.ip_address || 'Unknown'}</span>
+                          <span className="bg-amber-50 text-amber-800 px-2.5 py-1 rounded-md border border-amber-200">📍 {comment.location || 'Unknown'}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                        {!comment.approved && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await supabase.from('comments').update({ approved: true }).eq('id', comment.id);
+                              setAdminComments(prev => prev.map(c => c.id === comment.id ? { ...c, approved: true } : c));
+                            }}
+                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition cursor-pointer"
+                          >
+                            Approve ✅
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (confirm('Permanently delete this comment?')) {
+                              await supabase.from('comments').delete().eq('id', comment.id);
+                              setAdminComments(prev => prev.filter(c => c.id !== comment.id));
+                            }
+                          }}
+                          className="px-3.5 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-lg text-xs font-bold border border-rose-200 transition cursor-pointer"
+                        >
+                          Delete 🗑️
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {adminComments.length === 0 && <p className="text-center text-sm text-gray-400 py-10">No comments submitted yet.</p>}
+                </div>
+              </div>
+            )}
+
             {activeMenu === 'database' && (
               <div className="space-y-6 max-w-4xl">
-                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-4 rounded-xl flex items-start gap-3"><span className="text-xl">⚠️</span><div><h4 className="font-bold text-sm">Note: This page contains sensitive actions.</h4><p className="text-xs mt-1">Please make sure before you click the clear button. Data cannot be recovered once deleted.</p></div></div>
-                <div className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm"><h3 className="text-base font-bold text-gray-800 border-b pb-3 mb-4">Clean Database</h3><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"><label className="flex items-center justify-between p-4 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors"><div className="flex items-center gap-3"><input type="checkbox" className="w-4 h-4 text-rose-600 rounded border-gray-300 focus:ring-rose-500 cursor-pointer" checked={selectedTables.includes('rsvps')} onChange={() => toggleTableSelection('rsvps')} /><span className="text-sm font-semibold text-gray-700">RSVP Messages</span></div><span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-1 rounded-full">{rsvps.length}</span></label><label className="flex items-center justify-between p-4 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors"><div className="flex items-center gap-3"><input type="checkbox" className="w-4 h-4 text-rose-600 rounded border-gray-300 focus:ring-rose-500 cursor-pointer" checked={selectedTables.includes('posts')} onChange={() => toggleTableSelection('posts')} /><span className="text-sm font-semibold text-gray-700">Gallery Photos</span></div><span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-1 rounded-full">{posts.length}</span></label></div><div className="mt-6 flex justify-end"><button onClick={handleClearDatabase} disabled={clearingDB || selectedTables.length === 0} className="w-full sm:w-auto px-6 py-2.5 bg-rose-600 text-white rounded-lg text-sm font-bold shadow-lg transition-all cursor-pointer">{clearingDB ? 'Clearing Data...' : 'Clear Selected'}</button></div></div>
+                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-4 rounded-xl flex items-start gap-3"><span className="text-xl">⚠️</span><div><h4 className="font-bold text-sm">Note: This page contains sensitive actions.</h4><p className="text-xs mt-1">Data cannot be recovered once deleted.</p></div></div>
+                <div className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm"><h3 className="text-base font-bold text-gray-800 border-b pb-3 mb-4">Clean Database</h3><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"><label className="flex items-center justify-between p-4 border rounded-xl cursor-pointer hover:bg-gray-50"><div className="flex items-center gap-3"><input type="checkbox" className="w-4 h-4 text-rose-600 rounded" checked={selectedTables.includes('rsvps')} onChange={() => toggleTableSelection('rsvps')} /><span className="text-sm font-semibold text-gray-700">RSVP Messages</span></div><span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-1 rounded-full">{rsvps.length}</span></label><label className="flex items-center justify-between p-4 border rounded-xl cursor-pointer hover:bg-gray-50"><div className="flex items-center gap-3"><input type="checkbox" className="w-4 h-4 text-rose-600 rounded" checked={selectedTables.includes('posts')} onChange={() => toggleTableSelection('posts')} /><span className="text-sm font-semibold text-gray-700">Gallery Photos</span></div><span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-1 rounded-full">{posts.length}</span></label><label className="flex items-center justify-between p-4 border rounded-xl cursor-pointer hover:bg-gray-50"><div className="flex items-center gap-3"><input type="checkbox" className="w-4 h-4 text-rose-600 rounded" checked={selectedTables.includes('comments')} onChange={() => toggleTableSelection('comments')} /><span className="text-sm font-semibold text-gray-700">Visitor Comments</span></div><span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-1 rounded-full">{adminComments.length}</span></label></div><div className="mt-6 flex justify-end"><button onClick={handleClearDatabase} disabled={clearingDB || selectedTables.length === 0} className="w-full sm:w-auto px-6 py-2.5 bg-rose-600 text-white rounded-lg text-sm font-bold shadow-lg transition-all cursor-pointer">{clearingDB ? 'Clearing Data...' : 'Clear Selected'}</button></div></div>
               </div>
             )}
 
@@ -619,8 +904,181 @@ export default function Auth() {
                 </div>
               </div>
             )}
-
           </main>
+
+          {/* Right Slide-over Notification Sidebar */}
+          {isNotifDrawerOpen && (
+            <div className="fixed inset-0 z-50 overflow-hidden flex justify-end bg-black/40 animate-in fade-in duration-200">
+              <div className="w-full max-w-sm bg-white h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
+                <div className="p-4 border-b border-gray-200 flex items-center justify-between bg-[#1c2434] text-white">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🔔</span>
+                    <h3 className="font-bold text-sm">Notifications</h3>
+                  </div>
+                  <button 
+                    onClick={() => setIsNotifDrawerOpen(false)}
+                    className="text-gray-400 hover:text-white text-lg p-1 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  {notifications.map((n) => (
+                    <div 
+                      key={n.id}
+                      onClick={() => handleOpenNotificationDetail(n)}
+                      className="p-3 rounded-xl border border-gray-100 bg-gray-50 hover:bg-blue-50/60 transition cursor-pointer flex flex-col gap-1 relative"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                          {n.type === 'like' && '❤️'}
+                          {n.type === 'comment' && '💬'}
+                          {n.type === 'rsvp' && '💌'}
+                          {n.title}
+                        </span>
+                        <span className="text-[10px] text-gray-400">
+                          {new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 line-clamp-2">{n.description}</p>
+                    </div>
+                  ))}
+
+                  {notifications.length === 0 && (
+                    <p className="text-center text-sm text-gray-400 py-16">No notifications yet.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modal: Activity Details & Facebook-style Reply */}
+          {selectedPostForDetail && (
+            <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
+              <div className="bg-white rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+                <div className="p-4 border-b flex items-center justify-between bg-gray-50">
+                  <h3 className="font-bold text-sm text-gray-800">📸 Moment Activity Details</h3>
+                  <button 
+                    onClick={() => setSelectedPostForDetail(null)}
+                    className="text-gray-400 hover:text-gray-700 text-lg cursor-pointer p-1"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <div className="relative rounded-xl overflow-hidden bg-black flex items-center justify-center max-h-72">
+                    <img 
+                      src={selectedPostForDetail.image_url} 
+                      alt="" 
+                      className="max-h-72 w-full object-contain" 
+                    />
+                  </div>
+                  <div className="flex items-center justify-between px-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-rose-500 font-bold text-base">❤️ {selectedPostForDetail.likes || 0} Likes</span>
+                      <span className="text-gray-400">•</span>
+                      <span className="text-blue-600 font-bold text-sm">💬 {postSpecificComments.length} Comments</span>
+                    </div>
+                  </div>
+
+                  {selectedPostForDetail.caption && (
+                    <p className="text-xs text-gray-700 bg-gray-50 p-2.5 rounded-lg border border-gray-100">
+                      {selectedPostForDetail.caption}
+                    </p>
+                  )}
+
+                  <div className="pt-2 border-t space-y-3">
+                    <h4 className="text-xs font-bold text-gray-600 uppercase">Guest Comments & Replies</h4>
+                    
+                    {postSpecificComments.map((c) => (
+                      <div key={c.id} className="p-3 rounded-xl border border-gray-200 bg-white space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs text-gray-900">{c.name}</span>
+                            <span className="text-[10px] text-gray-400">{new Date(c.created_at).toLocaleTimeString()}</span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {!c.approved ? (
+                              <button 
+                                onClick={async () => {
+                                  await supabase.from('comments').update({ approved: true }).eq('id', c.id);
+                                  setAdminComments(prev => prev.map(item => item.id === c.id ? { ...item, approved: true } : item));
+                                }}
+                                className="text-[11px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded font-bold hover:bg-emerald-200 cursor-pointer"
+                              >
+                                Approve
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-emerald-600 font-semibold">● Public</span>
+                            )}
+                            
+                            <button 
+                              onClick={async () => {
+                                if (confirm('Delete this comment?')) {
+                                  await supabase.from('comments').delete().eq('id', c.id);
+                                  setAdminComments(prev => prev.filter(item => item.id !== c.id));
+                                }
+                              }}
+                              className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-gray-800 leading-relaxed font-medium pl-1">
+                          {c.message}
+                        </p>
+
+                        <div className="flex items-center gap-4 pt-1 text-[11px] text-gray-500 pl-1">
+                          <button 
+                            onClick={() => handleCommentLikeToggle(c.id, c.likes)}
+                            className="flex items-center gap-1 font-semibold text-rose-500 hover:text-rose-600 cursor-pointer"
+                          >
+                            ❤️ Like ({c.likes || 0})
+                          </button>
+                          <span>📱 {c.device || 'Mobile'}</span>
+                        </div>
+
+                        {c.reply && (
+                          <div className="bg-blue-50 p-2 rounded-lg text-xs border border-blue-100 mt-2 ml-3">
+                            <span className="font-bold text-blue-700">👑 Admin Reply:</span>
+                            <p className="text-gray-700 mt-0.5">{c.reply}</p>
+                          </div>
+                        )}
+
+                        <div className="flex gap-2 pt-1 mt-1 ml-3">
+                          <input 
+                            type="text" 
+                            placeholder="Write a reply..."
+                            value={replyInputs[c.id] || ''}
+                            onChange={(e) => setReplyInputs({ ...replyInputs, [c.id]: e.target.value })}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleSendReply(c.id); }}
+                            className="flex-1 text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg outline-none bg-gray-50 focus:bg-white focus:border-blue-500"
+                          />
+                          <button 
+                            type="button" 
+                            onClick={() => handleSendReply(c.id)}
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold cursor-pointer hover:bg-blue-700"
+                          >
+                            Reply
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+
+                    {postSpecificComments.length === 0 && (
+                      <p className="text-center text-xs text-gray-400 py-4">No comments on this photo yet.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       </div>
     );
@@ -631,90 +1089,33 @@ export default function Auth() {
       <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
         <div className="text-center mb-6">
           <div className="h-12 w-12 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-xl mx-auto mb-3 shadow">⚡</div>
-          <h2 className="text-xl font-bold text-gray-800">
-            {isResetMode ? 'Reset Admin Password' : 'Admin Sign In'}
-          </h2>
-          <p className="text-xs text-gray-400 mt-1">
-            {isResetMode 
-              ? 'Enter your registered email to receive a password reset link' 
-              : 'Control and manage your website content'}
-          </p>
+          <h2 className="text-xl font-bold text-gray-800">{isResetMode ? 'Reset Admin Password' : 'Admin Sign In'}</h2>
+          <p className="text-xs text-gray-400 mt-1">{isResetMode ? 'Enter your email to receive a reset link' : 'Control and manage your website content'}</p>
         </div>
         
         {isResetMode ? (
           <form onSubmit={handleResetPasswordRequest} className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-gray-600 uppercase">Admin Email</label>
-              <input 
-                type="email" 
-                placeholder="admin@example.com" 
-                value={email} 
-                onChange={(e) => setEmail(e.target.value)} 
-                required 
-                className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
-              />
+              <input type="email" placeholder="admin@example.com" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" />
             </div>
-            <button 
-              type="submit" 
-              disabled={loading} 
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg transition cursor-pointer"
-            >
-              {loading ? 'Sending Link...' : 'Send Reset Link 📧'}
-            </button>
-            <div className="text-center mt-3">
-              <button
-                type="button"
-                onClick={() => { setIsResetMode(false); setMessage(''); }}
-                className="text-xs text-blue-600 hover:underline font-medium cursor-pointer"
-              >
-                ← Back to Login
-              </button>
-            </div>
+            <button type="submit" disabled={loading} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg transition cursor-pointer">{loading ? 'Sending Link...' : 'Send Reset Link 📧'}</button>
+            <div className="text-center mt-3"><button type="button" onClick={() => { setIsResetMode(false); setMessage(''); }} className="text-xs text-blue-600 hover:underline font-medium cursor-pointer">← Back to Login</button></div>
           </form>
         ) : (
           <form onSubmit={handleSignIn} className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-gray-600 uppercase">Email</label>
-              <input 
-                type="email" 
-                name="email"
-                autoComplete="email"
-                placeholder="admin@example.com" 
-                value={email} 
-                onChange={(e) => setEmail(e.target.value)} 
-                required 
-                className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
-              />
+              <input type="email" name="email" autoComplete="email" placeholder="admin@example.com" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" />
             </div>
             <div>
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold text-gray-600 uppercase">Password</label>
-                <button
-                  type="button"
-                  onClick={() => { setIsResetMode(true); setMessage(''); }}
-                  className="text-xs text-blue-600 hover:underline font-medium cursor-pointer"
-                >
-                  Forgot password?
-                </button>
+                <button type="button" onClick={() => { setIsResetMode(true); setMessage(''); }} className="text-xs text-blue-600 hover:underline font-medium cursor-pointer">Forgot password?</button>
               </div>
-              <input 
-                type="password" 
-                name="password"
-                autoComplete="current-password"
-                placeholder="••••••••" 
-                value={password} 
-                onChange={(e) => setPassword(e.target.value)} 
-                required 
-                className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" 
-              />
+              <input type="password" name="password" autoComplete="current-password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required className="w-full mt-1 p-3 border rounded-xl text-sm bg-gray-50 focus:bg-white outline-blue-500" />
             </div>
-            <button 
-              type="submit" 
-              disabled={loading} 
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg transition cursor-pointer"
-            >
-              {loading ? 'Signing In...' : 'Sign In to Dashboard'}
-            </button>
+            <button type="submit" disabled={loading} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg transition cursor-pointer">{loading ? 'Signing In...' : 'Sign In to Dashboard'}</button>
           </form>
         )}
         {message && <p className="mt-4 text-center text-xs text-rose-500 font-semibold">{message}</p>}

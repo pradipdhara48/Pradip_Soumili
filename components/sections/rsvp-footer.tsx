@@ -16,7 +16,11 @@ export function RsvpFooter() {
   // ডাটাবেস থেকে ডেটা আনা
   useEffect(() => {
     async function fetchData() {
-      const { data: conf } = await supabase.from('site_settings').select('bride, groom, date_label, location').eq('id', 'main_config').single()
+      const { data: conf } = await supabase
+        .from('site_settings')
+        .select('bride, groom, date_label, location')
+        .eq('id', 'main_config')
+        .single()
       if (conf) setData(conf)
     }
     fetchData()
@@ -32,7 +36,7 @@ export function RsvpFooter() {
     if (!guestName.trim()) return
     setLoading(true)
 
-    // ১. অ্যাডমিন প্যানেলে দেখার জন্য Supabase ডাটাবেজে সেভ করা
+    // ১. অ্যাডমিন প্যানেলে দেখার জন্য Supabase ডাটাবেজে RSVP সেভ করা
     const { error } = await supabase.from('rsvps').insert([{
       name: guestName.trim(),
       message: message,
@@ -41,7 +45,19 @@ export function RsvpFooter() {
     }])
 
     if (!error) {
-      // ২. সরাসরি ব্রাউজার থেকে EmailJS এপিআই-তে ফেচ রিকোয়েস্ট পাঠানো
+      // ২. অ্যাডমিন প্যানেলে রিয়েলটাইম নোটিফিকেশন পাঠানো
+      try {
+        await supabase.from('admin_notifications').insert([{
+          type: 'rsvp',
+          title: `New Wish from ${guestName.trim()} 💌`,
+          description: `"${message.slice(0, 60)}"`,
+          post_id: null
+        }])
+      } catch (err) {
+        console.error('RSVP notification insert failed:', err)
+      }
+
+      // ৩. সরাসরি ব্রাউজার থেকে EmailJS এপিআই-তে ফেচ রিকোয়েস্ট পাঠানো
       try {
         await fetch('https://api.emailjs.com/api/v1.0/email/send', {
           method: 'POST',
