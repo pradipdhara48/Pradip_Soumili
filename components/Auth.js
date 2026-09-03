@@ -131,6 +131,18 @@ export default function Auth() {
   const [selectedTables, setSelectedTables] = useState([]);
   const [clearingDB, setClearingDB] = useState(false);
 
+  // মডাল ও ড্রয়ার স্টেট ট্র্যাকিং রেফারেন্স (যাতে useEffect dependency সাইজ স্থায়ী খালি [] থাকে)
+  const selectedPostRef = useRef(selectedPostForDetail);
+  const isNotifDrawerRef = useRef(isNotifDrawerOpen);
+
+  useEffect(() => {
+    selectedPostRef.current = selectedPostForDetail;
+  }, [selectedPostForDetail]);
+
+  useEffect(() => {
+    isNotifDrawerRef.current = isNotifDrawerOpen;
+  }, [isNotifDrawerOpen]);
+
   const registerDeviceForPush = async (userEmail) => {
     try {
       if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window) {
@@ -162,11 +174,47 @@ export default function Auth() {
     } catch (err) {}
   };
 
+  // ব্রাউজার ব্যাক বাটন ও হ্যাশ নেভিগেশন হ্যান্ডলার (ডিপেন্ডেন্সি ছাড়া নিরাপদ)
   useEffect(() => {
+    const hash = typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '';
     const savedMenu = localStorage.getItem('activeAdminMenu');
-    if (savedMenu) setActiveMenu(savedMenu);
 
-    // লোকালস্টোরেজ থেকে লাইকের রেকর্ড লোড
+    if (hash) {
+      setActiveMenu(hash);
+    } else if (savedMenu) {
+      setActiveMenu(savedMenu);
+      if (typeof window !== 'undefined') {
+        window.history.replaceState({ menu: savedMenu }, '', `#${savedMenu}`);
+      }
+    } else if (typeof window !== 'undefined') {
+      window.history.replaceState({ menu: 'overview' }, '', '#overview');
+    }
+
+    const handlePopState = (event) => {
+      // যদি ছবি ডিটেইল মডাল খোলা থাকে, ব্যাক চাপলে শুধু মডাল বন্ধ হবে
+      if (selectedPostRef.current) {
+        setSelectedPostForDetail(null);
+        return;
+      }
+      // যদি নোটিফিকেশন ড্রয়ার খোলা থাকে, ব্যাক চাপলে ড্রয়ার বন্ধ হবে
+      if (isNotifDrawerRef.current) {
+        setIsNotifDrawerOpen(false);
+        return;
+      }
+
+      // হিস্ট্রি থেকে আগের মেনুতে ফিরে যাওয়া
+      if (event.state && event.state.menu) {
+        setActiveMenu(event.state.menu);
+        localStorage.setItem('activeAdminMenu', event.state.menu);
+      } else {
+        const currentHash = window.location.hash.replace('#', '') || 'overview';
+        setActiveMenu(currentHash);
+        localStorage.setItem('activeAdminMenu', currentHash);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
     const savedAdminLikes = localStorage.getItem('admin_liked_comments');
     if (savedAdminLikes) {
       try {
@@ -177,12 +225,27 @@ export default function Auth() {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
 
   const handleMenuChange = (menu) => {
+    if (menu === activeMenu) return;
     setActiveMenu(menu);
     localStorage.setItem('activeAdminMenu', menu);
     setIsSidebarOpen(false);
+    if (typeof window !== 'undefined') {
+      window.history.pushState({ menu }, '', `#${menu}`);
+    }
+  };
+
+  const handleOpenPostDetail = (post) => {
+    setSelectedPostForDetail(post);
+    if (typeof window !== 'undefined') {
+      window.history.pushState({ modal: 'postDetail', menu: activeMenu }, '', `#${activeMenu}`);
+    }
   };
 
   useEffect(() => {
@@ -217,7 +280,7 @@ export default function Auth() {
       })
       .subscribe();
 
-    // কমেন্ট রিয়েলটাইম লিসেনার (গ্র্যানুলার আপডেট যাতে লোকাল ট্র্যাকিং ব্রেক না হয়)
+    // কমেন্ট রিয়েলটাইম লিসেনার
     const commentChannel = supabase
       .channel('public:comments_admin_sync')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, (payload) => {
@@ -285,7 +348,7 @@ export default function Auth() {
     if (notif.post_id) {
       const targetPost = posts.find(p => p.id === notif.post_id);
       if (targetPost) {
-        setSelectedPostForDetail(targetPost);
+        handleOpenPostDetail(targetPost);
         return;
       }
     }
@@ -295,12 +358,11 @@ export default function Auth() {
     }
   };
 
-  // অ্যাডমিনের লাইক/ডিসলাইক পারফেক্ট টগল হ্যান্ডলার
+  // অ্যাডমিন লাইক/ডিসলাইক টগল হ্যান্ডলার
   const handleCommentLikeToggle = async (commentId, currentLikes) => {
     const isLiked = Boolean(adminLikedCommentIds[commentId]);
     const newCount = isLiked ? Math.max(0, (currentLikes || 0) - 1) : (currentLikes || 0) + 1;
 
-    // ১. স্টেট ও লোকালস্টোরেজ আপডেট
     const updatedLikes = { ...adminLikedCommentIds };
     if (isLiked) {
       delete updatedLikes[commentId];
@@ -310,10 +372,7 @@ export default function Auth() {
     setAdminLikedCommentIds(updatedLikes);
     localStorage.setItem('admin_liked_comments', JSON.stringify(updatedLikes));
 
-    // ২. UI স্টেট আপডেট
     setAdminComments(prev => prev.map(c => c.id === commentId ? { ...c, likes: newCount } : c));
-
-    // ৩. Supabase-এ আপডেট
     await supabase.from('comments').update({ likes: newCount }).eq('id', commentId);
   };
 
@@ -835,7 +894,7 @@ export default function Auth() {
                   {posts.map((post) => {
                     const isEditing = editingCaptionId === post.id;
                     return (
-                      <div key={post.id} className="bg-white border rounded-xl overflow-hidden shadow-sm flex flex-col justify-between cursor-pointer" onClick={() => setSelectedPostForDetail(post)}>
+                      <div key={post.id} className="bg-white border rounded-xl overflow-hidden shadow-sm flex flex-col justify-between cursor-pointer" onClick={() => handleOpenPostDetail(post)}>
                         <img src={post.image_url} alt="" className="w-full h-44 object-cover" />
                         <div className="p-3">
                           {isEditing ? (
