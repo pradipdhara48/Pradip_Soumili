@@ -99,6 +99,7 @@ export default function Auth() {
   const [replyInputs, setReplyInputs] = useState({});
   const [incomingAlert, setIncomingAlert] = useState(null);
 
+  // অ্যাডমিন কমেন্ট লাইক ট্র্যাকিং স্টেট
   const [adminLikedCommentIds, setAdminLikedCommentIds] = useState({});
 
   // ক্যাপশন এডিট করার স্টেট
@@ -165,6 +166,7 @@ export default function Auth() {
     const savedMenu = localStorage.getItem('activeAdminMenu');
     if (savedMenu) setActiveMenu(savedMenu);
 
+    // লোকালস্টোরেজ থেকে লাইকের রেকর্ড লোড
     const savedAdminLikes = localStorage.getItem('admin_liked_comments');
     if (savedAdminLikes) {
       try {
@@ -215,27 +217,34 @@ export default function Auth() {
       })
       .subscribe();
 
-    // কমেন্ট সিংক লিসেনার
+    // কমেন্ট রিয়েলটাইম লিসেনার (গ্র্যানুলার আপডেট যাতে লোকাল ট্র্যাকিং ব্রেক না হয়)
     const commentChannel = supabase
       .channel('public:comments_admin_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, async () => {
-        const { data: updatedComments } = await supabase
-          .from('comments')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (updatedComments) setAdminComments(updatedComments);
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, (payload) => {
+        setAdminComments(prev => {
+          if (prev.some(c => c.id === payload.new.id)) return prev;
+          return [payload.new, ...prev];
+        });
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'comments' }, (payload) => {
+        setAdminComments(prev => prev.map(c => c.id === payload.new.id ? { ...c, ...payload.new } : c));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'comments' }, (payload) => {
+        setAdminComments(prev => prev.filter(c => c.id !== payload.old.id));
       })
       .subscribe();
 
-    // পোস্ট ও ফটো লাইক রিয়েলটাইম লিসেনার (নতুন ফটো, লাইক বা ক্যাপশন পরিবর্তনের জন্য)
+    // পোস্ট ও ফটো লাইক রিয়েলটাইম লিসেনার
     const postChannel = supabase
       .channel('public:posts_admin_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, async () => {
-        const { data: updatedPosts } = await supabase
-          .from('posts')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (updatedPosts) setPosts(updatedPosts);
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, (payload) => {
+        setPosts(prev => [payload.new, ...prev]);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'posts' }, (payload) => {
+        setPosts(prev => prev.map(p => p.id === payload.new.id ? { ...p, ...payload.new } : p));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'posts' }, (payload) => {
+        setPosts(prev => prev.filter(p => p.id !== payload.old.id));
       })
       .subscribe();
 
@@ -286,17 +295,25 @@ export default function Auth() {
     }
   };
 
+  // অ্যাডমিনের লাইক/ডিসলাইক পারফেক্ট টগল হ্যান্ডলার
   const handleCommentLikeToggle = async (commentId, currentLikes) => {
-    const isLiked = !!adminLikedCommentIds[commentId];
+    const isLiked = Boolean(adminLikedCommentIds[commentId]);
     const newCount = isLiked ? Math.max(0, (currentLikes || 0) - 1) : (currentLikes || 0) + 1;
 
-    const updatedMap = { ...adminLikedCommentIds };
-    if (isLiked) delete updatedMap[commentId];
-    else updatedMap[commentId] = true;
+    // ১. স্টেট ও লোকালস্টোরেজ আপডেট
+    const updatedLikes = { ...adminLikedCommentIds };
+    if (isLiked) {
+      delete updatedLikes[commentId];
+    } else {
+      updatedLikes[commentId] = true;
+    }
+    setAdminLikedCommentIds(updatedLikes);
+    localStorage.setItem('admin_liked_comments', JSON.stringify(updatedLikes));
 
-    setAdminLikedCommentIds(updatedMap);
-    localStorage.setItem('admin_liked_comments', JSON.stringify(updatedMap));
+    // ২. UI স্টেট আপডেট
     setAdminComments(prev => prev.map(c => c.id === commentId ? { ...c, likes: newCount } : c));
+
+    // ৩. Supabase-এ আপডেট
     await supabase.from('comments').update({ likes: newCount }).eq('id', commentId);
   };
 
@@ -901,7 +918,7 @@ export default function Auth() {
 
                 <div className="space-y-4">
                   {adminComments.map((comment) => {
-                    const isAdminLiked = !!adminLikedCommentIds[comment.id];
+                    const isAdminLiked = Boolean(adminLikedCommentIds[comment.id]);
                     return (
                       <div key={comment.id} className="p-4 border border-gray-200 rounded-xl bg-gray-50 flex flex-col sm:flex-row items-start justify-between gap-4">
                         <div className="space-y-2 flex-1">
@@ -1085,7 +1102,7 @@ export default function Auth() {
                     <h4 className="text-xs font-bold text-gray-600 uppercase">Guest Comments & Replies</h4>
                     
                     {postSpecificComments.map((c) => {
-                      const isLikedByAdmin = !!adminLikedCommentIds[c.id];
+                      const isLikedByAdmin = Boolean(adminLikedCommentIds[c.id]);
                       return (
                         <div key={c.id} className="p-3 rounded-xl border border-gray-200 bg-white space-y-2">
                           <div className="flex items-center justify-between">
@@ -1129,6 +1146,7 @@ export default function Auth() {
 
                           <div className="flex items-center gap-4 pt-1 text-[11px] text-gray-500 pl-1">
                             <button 
+                              type="button"
                               onClick={() => handleCommentLikeToggle(c.id, c.likes)}
                               className={`flex items-center gap-1.5 px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
                                 isLikedByAdmin 
