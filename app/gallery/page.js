@@ -94,12 +94,26 @@ export default function GalleryFeed() {
     await supabase.from('posts').update({ likes: newLikesCount }).eq('id', postId);
 
     if (!isCurrentlyLiked) {
+      // ১. ডাটাবেজ নোটিফিকেশন
       await supabase.from('admin_notifications').insert([{
         type: 'like',
         title: 'New Like received! ❤️',
         description: `Someone liked your photo. Total likes: ${newLikesCount}`,
         post_id: postId
       }]);
+
+      // ২. ব্যাকগ্রাউন্ড পুশ নোটিফিকেশন পাঠানো
+      try {
+        await fetch('/api/push/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'New Like received! ❤️',
+            message: `Someone liked your photo. Total likes: ${newLikesCount}`,
+            url: '/adminlogin'
+          })
+        });
+      } catch (err) {}
     }
   };
 
@@ -181,13 +195,26 @@ export default function GalleryFeed() {
       setComments(prev => [...prev, newCommentObj]);
     }
 
-    // অ্যাডমিন প্যানেলে রিয়েলটাইম নোটিফিকেশন পাঠানো
+    // অ্যাডমিন প্যানেলে রিয়েলটাইম নোটিফিকেশন
     await supabase.from('admin_notifications').insert([{
       type: 'comment',
       title: `New Comment from ${savedUserName} 💬`,
       description: `"${msg.slice(0, 50)}"`,
       post_id: postId
     }]);
+
+    // ব্যাকগ্রাউন্ড পুশ নোটিফিকেশন পাঠানো (ব্রাউজার ব্যাকগ্রাউন্ডে থাকলেও আসবে)
+    try {
+      await fetch('/api/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `New Comment from ${savedUserName} 💬`,
+          message: `"${msg.slice(0, 60)}"`,
+          url: '/adminlogin'
+        })
+      });
+    } catch (err) {}
 
     setCommentInputs(prev => ({ ...prev, [postId]: '' }));
     setSubmitting(false);
