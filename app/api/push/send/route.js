@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 
-// Vercel প্রোডাকশনে সার্ভারলেস ফাংশন নিশ্চিত করার জন্য
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
