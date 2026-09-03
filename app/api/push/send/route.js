@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
 
+// Vercel প্রোডাকশনে সার্ভারলেস ফাংশন নিশ্চিত করার জন্য
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 export async function POST(req) {
   try {
     const { type, guestName, message, totalLikes, totalComments, url } = await req.json();
@@ -51,7 +55,6 @@ export async function POST(req) {
              `📅 *Date:* ${dateStr} | ⏰ ${timeStr}`;
     }
 
-    // লাইভ ডোমেনের বাটন লিঙ্ক
     const liveTargetUrl = `https://pradipsoumili.vercel.app${url || '/adminlogin'}`;
 
     const telegramRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
