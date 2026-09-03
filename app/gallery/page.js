@@ -83,6 +83,16 @@ export default function GalleryFeed() {
     const isCurrentlyLiked = !!likedPosts[postId];
     const newLikesCount = isCurrentlyLiked ? Math.max(0, (currentLikes || 0) - 1) : (currentLikes || 0) + 1;
 
+    let currentLiker = savedUserName;
+    if (!isCurrentlyLiked && !currentLiker) {
+      const promptName = window.prompt("What's your name?");
+      if (promptName && promptName.trim()) {
+        currentLiker = promptName.trim();
+        setSavedUserName(currentLiker);
+        localStorage.setItem('guest_comment_name', currentLiker);
+      }
+    }
+
     const updatedLikes = { ...likedPosts };
     if (isCurrentlyLiked) delete updatedLikes[postId];
     else updatedLikes[postId] = true;
@@ -98,18 +108,19 @@ export default function GalleryFeed() {
       await supabase.from('admin_notifications').insert([{
         type: 'like',
         title: 'New Like received! ❤️',
-        description: `Someone liked your photo. Total likes: ${newLikesCount}`,
+        description: `${currentLiker || 'Someone'} liked your photo. Total likes: ${newLikesCount}`,
         post_id: postId
       }]);
 
-      // ২. ব্যাকগ্রাউন্ড পুশ নোটিফিকেশন পাঠানো
+      // ২. টেলিগ্রাম পুশ নোটিফিকেশন (ফরম্যাট অনুযায়ী নাম ও টোটাল লাইক)
       try {
         await fetch('/api/push/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title: 'New Like received! ❤️',
-            message: `Someone liked your photo. Total likes: ${newLikesCount}`,
+            type: 'like',
+            guestName: currentLiker || 'Someone',
+            totalLikes: newLikesCount,
             url: '/adminlogin'
           })
         });
@@ -203,14 +214,19 @@ export default function GalleryFeed() {
       post_id: postId
     }]);
 
-    // ব্যাকগ্রাউন্ড পুশ নোটিফিকেশন পাঠানো (ব্রাউজার ব্যাকগ্রাউন্ডে থাকলেও আসবে)
+    // এই ছবির মোট কমেন্ট সংখ্যা হিসাব
+    const totalCommentsOnPost = comments.filter(c => c.post_id === postId).length + 1;
+
+    // টেলিগ্রাম পুশ নোটিফিকেশন (নাম, কমেন্ট টেক্সট এবং টোটাল কমেন্ট)
     try {
       await fetch('/api/push/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: `New Comment from ${savedUserName} 💬`,
-          message: `"${msg.slice(0, 60)}"`,
+          type: 'comment',
+          guestName: savedUserName,
+          message: msg.slice(0, 80),
+          totalComments: totalCommentsOnPost,
           url: '/adminlogin'
         })
       });

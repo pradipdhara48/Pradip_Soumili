@@ -54,20 +54,21 @@ export function RsvpFooter() {
         }])
       } catch (err) {}
 
-      // ৩. ব্যাকগ্রাউন্ড সিস্টেম পুশ নোটিফিকেশন পাঠানো (ব্রাউজার বন্ধ থাকলেও আসবে)
+      // ৩. ব্যাকগ্রাউন্ড টেলিগ্রাম পুশ অ্যালার্ট পাঠানো
       try {
         await fetch('/api/push/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title: `New RSVP Wish from ${guestName.trim()} 💌`,
-            message: `"${message.slice(0, 70)}"`,
+            type: 'wish',
+            guestName: guestName.trim(),
+            message: message.trim(),
             url: '/adminlogin'
           })
         })
       } catch (err) {}
 
-      // ৪. EmailJS দিয়ে ইমেইল সেন্ড[cite: 2]
+      // ৪. EmailJS দিয়ে ইমেইল সেন্ড[cite: 3]
       try {
         await fetch('https://api.emailjs.com/api/v1.0/email/send', {
           method: 'POST',
