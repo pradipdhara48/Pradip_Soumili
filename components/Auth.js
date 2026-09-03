@@ -45,7 +45,6 @@ const compressImage = (file) => {
   });
 };
 
-// লাউড ও ক্রিস্প নোটিফিকেশন সাউন্ড সিন্থেসাইজার
 const playNotificationSound = () => {
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -72,7 +71,6 @@ const playNotificationSound = () => {
   } catch (e) {}
 };
 
-// VAPID কি কনভার্টার হেল্পার ফাংশন
 function urlBase64ToUint8Array(base64String) {
   if (!base64String) return new Uint8Array();
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -95,12 +93,18 @@ export default function Auth() {
   const [activeMenu, setActiveMenu] = useState('overview');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // নোটিফিকেশন ও ড্রয়ার স্টেট
   const [notifications, setNotifications] = useState([]);
   const [isNotifDrawerOpen, setIsNotifDrawerOpen] = useState(false);
   const [selectedPostForDetail, setSelectedPostForDetail] = useState(null);
   const [replyInputs, setReplyInputs] = useState({});
   const [incomingAlert, setIncomingAlert] = useState(null);
+
+  const [adminLikedCommentIds, setAdminLikedCommentIds] = useState({});
+
+  // ক্যাপশন এডিট করার স্টেট
+  const [editingCaptionId, setEditingCaptionId] = useState(null);
+  const [captionDraft, setCaptionDraft] = useState('');
+  const [savingCaption, setSavingCaption] = useState(false);
 
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [newPassword, setNewPassword] = useState('');
@@ -126,7 +130,6 @@ export default function Auth() {
   const [selectedTables, setSelectedTables] = useState([]);
   const [clearingDB, setClearingDB] = useState(false);
 
-  // পুশ সাবস্ক্রিপশন ফাংশন (নিরাপদ পারমিশন হ্যান্ডলিং সহ)
   const registerDeviceForPush = async (userEmail) => {
     try {
       if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window) {
@@ -135,14 +138,10 @@ export default function Auth() {
           permission = await Notification.requestPermission();
         }
 
-        if (permission !== 'granted') {
-          console.warn('Push notification permission not granted:', permission);
-          return;
-        }
+        if (permission !== 'granted') return;
 
         const reg = await navigator.serviceWorker.ready;
         const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-        
         if (!vapidKey) return;
 
         let sub = await reg.pushManager.getSubscription();
@@ -159,14 +158,19 @@ export default function Auth() {
           body: JSON.stringify({ subscription: sub, email: userEmail })
         });
       }
-    } catch (err) {
-      console.warn('Push registration error suppressed:', err.message);
-    }
+    } catch (err) {}
   };
 
   useEffect(() => {
     const savedMenu = localStorage.getItem('activeAdminMenu');
     if (savedMenu) setActiveMenu(savedMenu);
+
+    const savedAdminLikes = localStorage.getItem('admin_liked_comments');
+    if (savedAdminLikes) {
+      try {
+        setAdminLikedCommentIds(JSON.parse(savedAdminLikes));
+      } catch (e) {}
+    }
 
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -223,10 +227,23 @@ export default function Auth() {
       })
       .subscribe();
 
+    // পোস্ট ও ফটো লাইক রিয়েলটাইম লিসেনার (নতুন ফটো, লাইক বা ক্যাপশন পরিবর্তনের জন্য)
+    const postChannel = supabase
+      .channel('public:posts_admin_sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, async () => {
+        const { data: updatedPosts } = await supabase
+          .from('posts')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (updatedPosts) setPosts(updatedPosts);
+      })
+      .subscribe();
+
     return () => {
       subscription.unsubscribe();
       supabase.removeChannel(notifChannel);
       supabase.removeChannel(commentChannel);
+      supabase.removeChannel(postChannel);
     };
   }, []);
 
@@ -270,9 +287,17 @@ export default function Auth() {
   };
 
   const handleCommentLikeToggle = async (commentId, currentLikes) => {
-    const newCount = (currentLikes || 0) + 1;
-    await supabase.from('comments').update({ likes: newCount }).eq('id', commentId);
+    const isLiked = !!adminLikedCommentIds[commentId];
+    const newCount = isLiked ? Math.max(0, (currentLikes || 0) - 1) : (currentLikes || 0) + 1;
+
+    const updatedMap = { ...adminLikedCommentIds };
+    if (isLiked) delete updatedMap[commentId];
+    else updatedMap[commentId] = true;
+
+    setAdminLikedCommentIds(updatedMap);
+    localStorage.setItem('admin_liked_comments', JSON.stringify(updatedMap));
     setAdminComments(prev => prev.map(c => c.id === commentId ? { ...c, likes: newCount } : c));
+    await supabase.from('comments').update({ likes: newCount }).eq('id', commentId);
   };
 
   const handleSendReply = async (commentId) => {
@@ -282,6 +307,31 @@ export default function Auth() {
     await supabase.from('comments').update({ reply: replyText }).eq('id', commentId);
     setAdminComments(prev => prev.map(c => c.id === commentId ? { ...c, reply: replyText } : c));
     setReplyInputs(prev => ({ ...prev, [commentId]: '' }));
+  };
+
+  const handleStartEditCaption = (e, post) => {
+    e.stopPropagation();
+    setEditingCaptionId(post.id);
+    setCaptionDraft(post.caption || '');
+  };
+
+  const handleSaveCaption = async (e, postId) => {
+    e.stopPropagation();
+    try {
+      setSavingCaption(true);
+      const { error } = await supabase.from('posts').update({ caption: captionDraft }).eq('id', postId);
+      if (error) throw error;
+
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, caption: captionDraft } : p));
+      if (selectedPostForDetail?.id === postId) {
+        setSelectedPostForDetail(prev => ({ ...prev, caption: captionDraft }));
+      }
+      setEditingCaptionId(null);
+    } catch (err) {
+      alert('Failed to update caption: ' + err.message);
+    } finally {
+      setSavingCaption(false);
+    }
   };
 
   const handleSaveConfig = async (e) => {
@@ -448,9 +498,8 @@ export default function Auth() {
       redirectTo: typeof window !== 'undefined' ? `${window.location.origin}/adminlogin` : undefined,
     });
     setLoading(false);
-    if (error) {
-      setMessage(error.message);
-    } else {
+    if (error) setMessage(error.message);
+    else {
       alert('Password reset link has been sent to your email! Please check your inbox.');
       setIsResetMode(false);
     }
@@ -492,35 +541,13 @@ export default function Auth() {
                 <span className="text-xl">🔔</span>
                 <h4 className="font-bold text-sm text-gray-800">New Notification</h4>
               </div>
-              <button 
-                onClick={() => setIncomingAlert(null)}
-                className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
-              >
-                ✕
-              </button>
+              <button onClick={() => setIncomingAlert(null)} className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer">✕</button>
             </div>
             <p className="text-xs font-semibold text-gray-700 mt-2">{incomingAlert.title}</p>
             <p className="text-xs text-gray-500 line-clamp-1 mt-0.5">{incomingAlert.description}</p>
             <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-gray-100">
-              <button
-                type="button"
-                onClick={() => setIncomingAlert(null)}
-                className="px-3 py-1.5 text-xs text-gray-500 font-semibold hover:bg-gray-100 rounded-lg cursor-pointer"
-              >
-                Close
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIncomingAlert(null);
-                  setIsNotifDrawerOpen(true);
-                  markNotificationsAsRead();
-                  handleOpenNotificationDetail(incomingAlert);
-                }}
-                className="px-4 py-1.5 text-xs bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow cursor-pointer"
-              >
-                View
-              </button>
+              <button type="button" onClick={() => setIncomingAlert(null)} className="px-3 py-1.5 text-xs text-gray-500 font-semibold hover:bg-gray-100 rounded-lg cursor-pointer">Close</button>
+              <button type="button" onClick={() => { setIncomingAlert(null); setIsNotifDrawerOpen(true); markNotificationsAsRead(); handleOpenNotificationDetail(incomingAlert); }} className="px-4 py-1.5 text-xs bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow cursor-pointer">View</button>
             </div>
           </div>
         )}
@@ -532,13 +559,7 @@ export default function Auth() {
                 <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white shadow">⚡</div>
                 <h1 className="text-xl font-bold tracking-wide text-white">AdminPanel</h1>
               </div>
-              <button 
-                type="button" 
-                onClick={() => setIsSidebarOpen(false)} 
-                className="md:hidden text-gray-400 hover:text-white p-1 cursor-pointer"
-              >
-                ✕
-              </button>
+              <button type="button" onClick={() => setIsSidebarOpen(false)} className="md:hidden text-gray-400 hover:text-white p-1 cursor-pointer">✕</button>
             </div>
             <nav className="p-4 space-y-1">
               <p className="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">Main Menu</p>
@@ -570,12 +591,7 @@ export default function Auth() {
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
           <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-8 shrink-0">
             <div className="flex items-center gap-3">
-              <button 
-                type="button" 
-                onClick={() => setIsSidebarOpen(true)} 
-                className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 md:hidden cursor-pointer"
-                aria-label="Open Menu"
-              >
+              <button type="button" onClick={() => setIsSidebarOpen(true)} className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 md:hidden cursor-pointer">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
@@ -585,15 +601,10 @@ export default function Auth() {
 
             <div className="flex items-center gap-4">
               <a href="/" target="_blank" className="text-xs font-semibold text-blue-600 hover:underline shrink-0 hidden sm:block">↗ View Live Website</a>
-
               <button 
                 type="button"
-                onClick={() => {
-                  setIsNotifDrawerOpen(true);
-                  markNotificationsAsRead();
-                }}
+                onClick={() => { setIsNotifDrawerOpen(true); markNotificationsAsRead(); }}
                 className="relative p-2 rounded-full text-gray-600 hover:bg-gray-100 transition cursor-pointer"
-                aria-label="Notifications"
               >
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -802,19 +813,64 @@ export default function Auth() {
             {activeMenu === 'gallery' && (
               <div className="space-y-6 max-w-4xl">
                 <form onSubmit={handleUpload} className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm space-y-4"><h3 className="text-base font-bold text-gray-800">Upload to Live Feed</h3><input type="file" accept="image/*" onChange={(e) => setFile(e.target.files[0])} required className="text-sm w-full" /><textarea placeholder="Write a sweet caption..." value={caption} onChange={(e) => setCaption(e.target.value)} rows={2} className="w-full p-2.5 border rounded-lg text-sm bg-gray-50" /><button type="submit" disabled={uploading} className="w-full sm:w-auto px-5 py-2.5 bg-blue-600 text-white rounded-lg text-xs font-semibold shadow cursor-pointer">{uploading ? 'Uploading...' : 'Publish Photo 🚀'}</button></form>
+                
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                  {posts.map((post) => (
-                    <div key={post.id} className="bg-white border rounded-xl overflow-hidden shadow-sm flex flex-col justify-between cursor-pointer" onClick={() => setSelectedPostForDetail(post)}>
-                      <img src={post.image_url} alt="" className="w-full h-44 object-cover" />
-                      <div className="p-3">
-                        <p className="text-xs font-semibold text-gray-800 truncate">{post.caption || 'No caption'}</p>
-                        <div className="flex items-center justify-between mt-3">
-                          <span className="text-xs text-rose-500 font-bold">❤️ {post.likes || 0}</span>
-                          <button onClick={(e) => { e.stopPropagation(); handleDeletePost(post.id, post.image_url); }} className="text-xs text-rose-600 hover:bg-rose-50 px-2 py-1 rounded cursor-pointer font-medium">Delete</button>
+                  {posts.map((post) => {
+                    const isEditing = editingCaptionId === post.id;
+                    return (
+                      <div key={post.id} className="bg-white border rounded-xl overflow-hidden shadow-sm flex flex-col justify-between cursor-pointer" onClick={() => setSelectedPostForDetail(post)}>
+                        <img src={post.image_url} alt="" className="w-full h-44 object-cover" />
+                        <div className="p-3">
+                          {isEditing ? (
+                            <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                              <textarea
+                                value={captionDraft}
+                                onChange={(e) => setCaptionDraft(e.target.value)}
+                                rows={2}
+                                className="w-full p-2 border border-blue-300 rounded-lg text-xs outline-none bg-blue-50/20"
+                                placeholder="Edit caption..."
+                                autoFocus
+                              />
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setEditingCaptionId(null); }}
+                                  className="text-xs px-2.5 py-1 text-gray-500 hover:bg-gray-100 rounded"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={savingCaption}
+                                  onClick={(e) => handleSaveCaption(e, post.id)}
+                                  className="text-xs px-3 py-1 bg-blue-600 text-white font-semibold rounded hover:bg-blue-700"
+                                >
+                                  {savingCaption ? '...' : 'Save'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-xs font-semibold text-gray-800 line-clamp-2 flex-1">{post.caption || 'No caption'}</p>
+                              <button
+                                type="button"
+                                onClick={(e) => handleStartEditCaption(e, post)}
+                                className="text-xs text-blue-600 hover:bg-blue-50 p-1 rounded cursor-pointer shrink-0"
+                                title="Edit caption"
+                              >
+                                ✏️
+                              </button>
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between mt-3 pt-2 border-t border-gray-100">
+                            <span className="text-xs text-rose-500 font-bold">❤️ {post.likes || 0}</span>
+                            <button onClick={(e) => { e.stopPropagation(); handleDeletePost(post.id, post.image_url); }} className="text-xs text-rose-600 hover:bg-rose-50 px-2 py-1 rounded cursor-pointer font-medium">Delete</button>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -844,65 +900,81 @@ export default function Auth() {
                 </div>
 
                 <div className="space-y-4">
-                  {adminComments.map((comment) => (
-                    <div key={comment.id} className="p-4 border border-gray-200 rounded-xl bg-gray-50 flex flex-col sm:flex-row items-start justify-between gap-4">
-                      <div className="space-y-2 flex-1">
-                        <div className="flex items-center gap-2">
-                          <h4 className="text-sm font-bold text-gray-900">{comment.name}</h4>
-                          <span className="text-[11px] text-gray-400">• {new Date(comment.created_at).toLocaleString()}</span>
-                          {comment.approved ? (
-                            <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">● Public</span>
-                          ) : (
-                            <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full">⏳ Pending</span>
-                          )}
-                        </div>
-
-                        <p className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-100 shadow-xs font-medium leading-relaxed">
-                          "{comment.message}"
-                        </p>
-
-                        {comment.reply && (
-                          <div className="bg-blue-50/60 p-2.5 rounded-lg border border-blue-100 text-xs ml-4">
-                            <span className="font-bold text-blue-700">👑 Admin Reply:</span>
-                            <p className="text-gray-700 mt-0.5">{comment.reply}</p>
+                  {adminComments.map((comment) => {
+                    const isAdminLiked = !!adminLikedCommentIds[comment.id];
+                    return (
+                      <div key={comment.id} className="p-4 border border-gray-200 rounded-xl bg-gray-50 flex flex-col sm:flex-row items-start justify-between gap-4">
+                        <div className="space-y-2 flex-1">
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-bold text-gray-900">{comment.name}</h4>
+                            <span className="text-[11px] text-gray-400">• {new Date(comment.created_at).toLocaleString()}</span>
+                            {comment.approved ? (
+                              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">● Public</span>
+                            ) : (
+                              <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full">⏳ Pending</span>
+                            )}
                           </div>
-                        )}
 
-                        <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
-                          <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md border border-blue-200 font-mono">📱 {comment.device || 'Unknown'}</span>
-                          <span className="bg-purple-50 text-purple-700 px-2.5 py-1 rounded-md border border-purple-200 font-mono">🌐 IP: {comment.ip_address || 'Unknown'}</span>
-                          <span className="bg-amber-50 text-amber-800 px-2.5 py-1 rounded-md border border-amber-200">📍 {comment.location || 'Unknown'}</span>
+                          <p className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-100 shadow-xs font-medium leading-relaxed">
+                            "{comment.message}"
+                          </p>
+
+                          {comment.reply && (
+                            <div className="bg-blue-50/60 p-2.5 rounded-lg border border-blue-100 text-xs ml-4">
+                              <span className="font-bold text-blue-700">👑 Admin Reply:</span>
+                              <p className="text-gray-700 mt-0.5">{comment.reply}</p>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
+                            <button
+                              type="button"
+                              onClick={() => handleCommentLikeToggle(comment.id, comment.likes)}
+                              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-bold transition cursor-pointer ${
+                                isAdminLiked 
+                                  ? 'bg-rose-50 border-rose-300 text-rose-600 shadow-xs' 
+                                  : 'bg-white border-gray-200 text-gray-500 hover:text-rose-500'
+                              }`}
+                            >
+                              <span>{isAdminLiked ? '❤️' : '🤍'}</span>
+                              <span>{comment.likes || 0} Likes</span>
+                            </button>
+
+                            <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md border border-blue-200 font-mono">📱 {comment.device || 'Unknown'}</span>
+                            <span className="bg-purple-50 text-purple-700 px-2.5 py-1 rounded-md border border-purple-200 font-mono">🌐 IP: {comment.ip_address || 'Unknown'}</span>
+                            <span className="bg-amber-50 text-amber-800 px-2.5 py-1 rounded-md border border-amber-200">📍 {comment.location || 'Unknown'}</span>
+                          </div>
                         </div>
-                      </div>
 
-                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                        {!comment.approved && (
+                        <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                          {!comment.approved && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await supabase.from('comments').update({ approved: true }).eq('id', comment.id);
+                                setAdminComments(prev => prev.map(c => c.id === comment.id ? { ...c, approved: true } : c));
+                              }}
+                              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition cursor-pointer"
+                            >
+                              Approve ✅
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={async () => {
-                              await supabase.from('comments').update({ approved: true }).eq('id', comment.id);
-                              setAdminComments(prev => prev.map(c => c.id === comment.id ? { ...c, approved: true } : c));
+                              if (confirm('Permanently delete this comment?')) {
+                                await supabase.from('comments').delete().eq('id', comment.id);
+                                setAdminComments(prev => prev.filter(c => c.id !== comment.id));
+                              }
                             }}
-                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition cursor-pointer"
+                            className="px-3.5 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-lg text-xs font-bold border border-rose-200 transition cursor-pointer"
                           >
-                            Approve ✅
+                            Delete 🗑️
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (confirm('Permanently delete this comment?')) {
-                              await supabase.from('comments').delete().eq('id', comment.id);
-                              setAdminComments(prev => prev.filter(c => c.id !== comment.id));
-                            }
-                          }}
-                          className="px-3.5 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-lg text-xs font-bold border border-rose-200 transition cursor-pointer"
-                        >
-                          Delete 🗑️
-                        </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {adminComments.length === 0 && <p className="text-center text-sm text-gray-400 py-10">No comments submitted yet.</p>}
                 </div>
               </div>
@@ -936,12 +1008,7 @@ export default function Auth() {
                     <span className="text-lg">🔔</span>
                     <h3 className="font-bold text-sm">Notifications</h3>
                   </div>
-                  <button 
-                    onClick={() => setIsNotifDrawerOpen(false)}
-                    className="text-gray-400 hover:text-white text-lg p-1 cursor-pointer"
-                  >
-                    ✕
-                  </button>
+                  <button onClick={() => setIsNotifDrawerOpen(false)} className="text-gray-400 hover:text-white text-lg p-1 cursor-pointer">✕</button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -979,21 +1046,12 @@ export default function Auth() {
               <div className="bg-white rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
                 <div className="p-4 border-b flex items-center justify-between bg-gray-50">
                   <h3 className="font-bold text-sm text-gray-800">📸 Moment Activity Details</h3>
-                  <button 
-                    onClick={() => setSelectedPostForDetail(null)}
-                    className="text-gray-400 hover:text-gray-700 text-lg cursor-pointer p-1"
-                  >
-                    ✕
-                  </button>
+                  <button onClick={() => setSelectedPostForDetail(null)} className="text-gray-400 hover:text-gray-700 text-lg cursor-pointer p-1">✕</button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
                   <div className="relative rounded-xl overflow-hidden bg-black flex items-center justify-center max-h-72">
-                    <img 
-                      src={selectedPostForDetail.image_url} 
-                      alt="" 
-                      className="max-h-72 w-full object-contain" 
-                    />
+                    <img src={selectedPostForDetail.image_url} alt="" className="max-h-72 w-full object-contain" />
                   </div>
                   <div className="flex items-center justify-between px-1">
                     <div className="flex items-center gap-2">
@@ -1003,92 +1061,114 @@ export default function Auth() {
                     </div>
                   </div>
 
-                  {selectedPostForDetail.caption && (
-                    <p className="text-xs text-gray-700 bg-gray-50 p-2.5 rounded-lg border border-gray-100">
-                      {selectedPostForDetail.caption}
-                    </p>
+                  {editingCaptionId === selectedPostForDetail.id ? (
+                    <div className="bg-gray-50 p-2.5 rounded-lg border border-blue-200 space-y-2">
+                      <textarea
+                        value={captionDraft}
+                        onChange={(e) => setCaptionDraft(e.target.value)}
+                        rows={2}
+                        className="w-full p-2 border border-blue-300 rounded text-xs bg-white outline-none"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button type="button" onClick={() => setEditingCaptionId(null)} className="text-xs px-2.5 py-1 text-gray-500 hover:bg-gray-200 rounded">Cancel</button>
+                        <button type="button" disabled={savingCaption} onClick={(e) => handleSaveCaption(e, selectedPostForDetail.id)} className="text-xs px-3 py-1 bg-blue-600 text-white rounded font-bold">Save</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start justify-between bg-gray-50 p-2.5 rounded-lg border border-gray-100">
+                      <p className="text-xs text-gray-700 flex-1">{selectedPostForDetail.caption || 'No caption'}</p>
+                      <button type="button" onClick={(e) => handleStartEditCaption(e, selectedPostForDetail)} className="text-xs text-blue-600 hover:underline ml-2 font-medium shrink-0">✏️ Edit</button>
+                    </div>
                   )}
 
                   <div className="pt-2 border-t space-y-3">
                     <h4 className="text-xs font-bold text-gray-600 uppercase">Guest Comments & Replies</h4>
                     
-                    {postSpecificComments.map((c) => (
-                      <div key={c.id} className="p-3 rounded-xl border border-gray-200 bg-white space-y-2">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-xs text-gray-900">{c.name}</span>
-                            <span className="text-[10px] text-gray-400">{new Date(c.created_at).toLocaleTimeString()}</span>
-                          </div>
+                    {postSpecificComments.map((c) => {
+                      const isLikedByAdmin = !!adminLikedCommentIds[c.id];
+                      return (
+                        <div key={c.id} className="p-3 rounded-xl border border-gray-200 bg-white space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-xs text-gray-900">{c.name}</span>
+                              <span className="text-[10px] text-gray-400">{new Date(c.created_at).toLocaleTimeString()}</span>
+                            </div>
 
-                          <div className="flex items-center gap-2">
-                            {!c.approved ? (
+                            <div className="flex items-center gap-2">
+                              {!c.approved ? (
+                                <button 
+                                  onClick={async () => {
+                                    await supabase.from('comments').update({ approved: true }).eq('id', c.id);
+                                    setAdminComments(prev => prev.map(item => item.id === c.id ? { ...item, approved: true } : item));
+                                  }}
+                                  className="text-[11px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded font-bold hover:bg-emerald-200 cursor-pointer"
+                                >
+                                  Approve
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-emerald-600 font-semibold">● Public</span>
+                              )}
+                              
                               <button 
                                 onClick={async () => {
-                                  await supabase.from('comments').update({ approved: true }).eq('id', c.id);
-                                  setAdminComments(prev => prev.map(item => item.id === c.id ? { ...item, approved: true } : item));
+                                  if (confirm('Delete this comment?')) {
+                                    await supabase.from('comments').delete().eq('id', c.id);
+                                    setAdminComments(prev => prev.filter(item => item.id !== c.id));
+                                  }
                                 }}
-                                className="text-[11px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded font-bold hover:bg-emerald-200 cursor-pointer"
+                                className="text-[11px] text-rose-500 hover:underline cursor-pointer"
                               >
-                                Approve
+                                Delete
                               </button>
-                            ) : (
-                              <span className="text-[10px] text-emerald-600 font-semibold">● Public</span>
-                            )}
-                            
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-gray-800 leading-relaxed font-medium pl-1">
+                            {c.message}
+                          </p>
+
+                          <div className="flex items-center gap-4 pt-1 text-[11px] text-gray-500 pl-1">
                             <button 
-                              onClick={async () => {
-                                if (confirm('Delete this comment?')) {
-                                  await supabase.from('comments').delete().eq('id', c.id);
-                                  setAdminComments(prev => prev.filter(item => item.id !== c.id));
-                                }
-                              }}
-                              className="text-[11px] text-rose-500 hover:underline cursor-pointer"
+                              onClick={() => handleCommentLikeToggle(c.id, c.likes)}
+                              className={`flex items-center gap-1.5 px-2 py-0.5 rounded font-semibold transition cursor-pointer ${
+                                isLikedByAdmin 
+                                  ? 'bg-rose-50 text-rose-600 font-bold' 
+                                  : 'text-gray-500 hover:text-rose-600'
+                              }`}
                             >
-                              Delete
+                              <span>{isLikedByAdmin ? '❤️' : '🤍'}</span>
+                              <span>Like ({c.likes || 0})</span>
+                            </button>
+                            <span>📱 {c.device || 'Mobile'}</span>
+                          </div>
+
+                          {c.reply && (
+                            <div className="bg-blue-50 p-2 rounded-lg text-xs border border-blue-100 mt-2 ml-3">
+                              <span className="font-bold text-blue-700">👑 Admin Reply:</span>
+                              <p className="text-gray-700 mt-0.5">{c.reply}</p>
+                            </div>
+                          )}
+
+                          <div className="flex gap-2 pt-1 mt-1 ml-3">
+                            <input 
+                              type="text" 
+                              placeholder="Write a reply..."
+                              value={replyInputs[c.id] || ''}
+                              onChange={(e) => setReplyInputs({ ...replyInputs, [c.id]: e.target.value })}
+                              onKeyDown={(e) => { if (e.key === 'Enter') handleSendReply(c.id); }}
+                              className="flex-1 text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg outline-none bg-gray-50 focus:bg-white focus:border-blue-500"
+                            />
+                            <button 
+                              type="button" 
+                              onClick={() => handleSendReply(c.id)}
+                              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold cursor-pointer hover:bg-blue-700"
+                            >
+                              Reply
                             </button>
                           </div>
                         </div>
-
-                        <p className="text-xs text-gray-800 leading-relaxed font-medium pl-1">
-                          {c.message}
-                        </p>
-
-                        <div className="flex items-center gap-4 pt-1 text-[11px] text-gray-500 pl-1">
-                          <button 
-                            onClick={() => handleCommentLikeToggle(c.id, c.likes)}
-                            className="flex items-center gap-1 font-semibold text-rose-500 hover:text-rose-600 cursor-pointer"
-                          >
-                            ❤️ Like ({c.likes || 0})
-                          </button>
-                          <span>📱 {c.device || 'Mobile'}</span>
-                        </div>
-
-                        {c.reply && (
-                          <div className="bg-blue-50 p-2 rounded-lg text-xs border border-blue-100 mt-2 ml-3">
-                            <span className="font-bold text-blue-700">👑 Admin Reply:</span>
-                            <p className="text-gray-700 mt-0.5">{c.reply}</p>
-                          </div>
-                        )}
-
-                        <div className="flex gap-2 pt-1 mt-1 ml-3">
-                          <input 
-                            type="text" 
-                            placeholder="Write a reply..."
-                            value={replyInputs[c.id] || ''}
-                            onChange={(e) => setReplyInputs({ ...replyInputs, [c.id]: e.target.value })}
-                            onKeyDown={(e) => { if (e.key === 'Enter') handleSendReply(c.id); }}
-                            className="flex-1 text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg outline-none bg-gray-50 focus:bg-white focus:border-blue-500"
-                          />
-                          <button 
-                            type="button" 
-                            onClick={() => handleSendReply(c.id)}
-                            className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold cursor-pointer hover:bg-blue-700"
-                          >
-                            Reply
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
 
                     {postSpecificComments.length === 0 && (
                       <p className="text-center text-xs text-gray-400 py-4">No comments on this photo yet.</p>

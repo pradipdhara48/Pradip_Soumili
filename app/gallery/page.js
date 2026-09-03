@@ -27,6 +27,7 @@ export default function GalleryFeed() {
   const [likedPosts, setLikedPosts] = useState({});
   const [comments, setComments] = useState([]);
   const [myCommentIds, setMyCommentIds] = useState([]);
+  const [likedCommentIds, setLikedCommentIds] = useState({});
   const [animatingPostId, setAnimatingPostId] = useState(null);
 
   const [savedUserName, setSavedUserName] = useState('');
@@ -42,6 +43,11 @@ export default function GalleryFeed() {
       try { setLikedPosts(JSON.parse(localLikes)); } catch (e) {}
     }
 
+    const localCommentLikes = localStorage.getItem('user_liked_comments');
+    if (localCommentLikes) {
+      try { setLikedCommentIds(JSON.parse(localCommentLikes)); } catch (e) {}
+    }
+
     const localName = localStorage.getItem('guest_comment_name');
     if (localName) setSavedUserName(localName);
 
@@ -53,14 +59,39 @@ export default function GalleryFeed() {
     fetchPosts();
     fetchComments();
 
+    // পোস্ট রিয়েলটাইম চ্যানেল: ক্যাপশন এডিট, লাইক পরিবর্তন ও পোস্ট ডিলিট হ্যান্ডলার
     const postChannel = supabase
-      .channel('public:posts')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, () => fetchPosts())
+      .channel('public:posts_realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, (payload) => {
+        setPosts((prev) => [payload.new, ...prev]);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'posts' }, (payload) => {
+        setPosts((prev) =>
+          prev.map((p) => (p.id === payload.new.id ? { ...p, ...payload.new } : p))
+        );
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'posts' }, (payload) => {
+        setPosts((prev) => prev.filter((p) => p.id !== payload.old.id));
+      })
       .subscribe();
 
+    // কমেন্ট রিয়েলটাইম চ্যানেল: নতুন কমেন্ট, অ্যাপ্রুভাল, রিপ্লাই, লাইক ও ডিলিট হ্যান্ডলার
     const commentChannel = supabase
-      .channel('public:comments')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, () => fetchComments())
+      .channel('public:comments_realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, (payload) => {
+        setComments((prev) => {
+          if (prev.some((c) => c.id === payload.new.id)) return prev;
+          return [...prev, payload.new];
+        });
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'comments' }, (payload) => {
+        setComments((prev) =>
+          prev.map((c) => (c.id === payload.new.id ? { ...c, ...payload.new } : c))
+        );
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'comments' }, (payload) => {
+        setComments((prev) => prev.filter((c) => c.id !== payload.old.id));
+      })
       .subscribe();
 
     return () => {
@@ -104,7 +135,6 @@ export default function GalleryFeed() {
     await supabase.from('posts').update({ likes: newLikesCount }).eq('id', postId);
 
     if (!isCurrentlyLiked) {
-      // ১. ডাটাবেজ নোটিফিকেশন
       await supabase.from('admin_notifications').insert([{
         type: 'like',
         title: 'New Like received! ❤️',
@@ -112,7 +142,6 @@ export default function GalleryFeed() {
         post_id: postId
       }]);
 
-      // ২. টেলিগ্রাম পুশ নোটিফিকেশন (ফরম্যাট অনুযায়ী নাম ও টোটাল লাইক)
       try {
         await fetch('/api/push/send', {
           method: 'POST',
@@ -126,6 +155,24 @@ export default function GalleryFeed() {
         });
       } catch (err) {}
     }
+  };
+
+  const handleToggleCommentLike = async (commentId, currentLikes) => {
+    const isLiked = !!likedCommentIds[commentId];
+    const newCount = isLiked ? Math.max(0, (currentLikes || 0) - 1) : (currentLikes || 0) + 1;
+
+    const updatedMap = { ...likedCommentIds };
+    if (isLiked) {
+      delete updatedMap[commentId];
+    } else {
+      updatedMap[commentId] = true;
+    }
+
+    setLikedCommentIds(updatedMap);
+    localStorage.setItem('user_liked_comments', JSON.stringify(updatedMap));
+
+    setComments(prev => prev.map(c => c.id === commentId ? { ...c, likes: newCount } : c));
+    await supabase.from('comments').update({ likes: newCount }).eq('id', commentId);
   };
 
   const handleDoubleClick = (postId, currentLikes) => {
@@ -178,7 +225,6 @@ export default function GalleryFeed() {
 
     const device = getDeviceInfo();
 
-    // কমেন্ট ডাটাবেসে সেভ করা
     const { data: insertedData, error: commentError } = await supabase.from('comments').insert([
       {
         post_id: postId,
@@ -187,13 +233,13 @@ export default function GalleryFeed() {
         device,
         ip_address: ip,
         location,
-        approved: false
+        approved: false,
+        likes: 0
       }
     ]).select();
 
     if (commentError) {
-      console.error('Comment insertion error:', commentError.message || commentError);
-      alert('Failed to post comment. Check Supabase columns and RLS policy: ' + (commentError.message || ''));
+      alert('Failed to post comment: ' + (commentError.message || ''));
       setSubmitting(false);
       return;
     }
@@ -203,10 +249,12 @@ export default function GalleryFeed() {
       const updatedIds = [...myCommentIds, newCommentObj.id];
       setMyCommentIds(updatedIds);
       localStorage.setItem('user_posted_comment_ids', JSON.stringify(updatedIds));
-      setComments(prev => [...prev, newCommentObj]);
+      setComments(prev => {
+        if (prev.some(c => c.id === newCommentObj.id)) return prev;
+        return [...prev, newCommentObj];
+      });
     }
 
-    // অ্যাডমিন প্যানেলে রিয়েলটাইম নোটিফিকেশন
     await supabase.from('admin_notifications').insert([{
       type: 'comment',
       title: `New Comment from ${savedUserName} 💬`,
@@ -214,10 +262,8 @@ export default function GalleryFeed() {
       post_id: postId
     }]);
 
-    // এই ছবির মোট কমেন্ট সংখ্যা হিসাব
     const totalCommentsOnPost = comments.filter(c => c.post_id === postId).length + 1;
 
-    // টেলিগ্রাম পুশ নোটিফিকেশন (নাম, কমেন্ট টেক্সট এবং টোটাল কমেন্ট)
     try {
       await fetch('/api/push/send', {
         method: 'POST',
@@ -295,7 +341,9 @@ export default function GalleryFeed() {
         {posts.map((post) => {
           const isLiked = !!likedPosts[post.id];
           const visibleComments = comments.filter(c => 
-            c.post_id === post.id && (c.approved === true || myCommentIds.includes(c.id))
+            c.post_id === post.id && 
+            !c.parent_id && 
+            (c.approved === true || myCommentIds.includes(c.id) || c.is_admin === true)
           );
           const isCommentOpen = activePostId === post.id;
 
@@ -337,17 +385,54 @@ export default function GalleryFeed() {
                   {post.likes || 0} {post.likes === 1 ? 'like' : 'likes'}
                 </div>
 
+                {/* পোস্ট ক্যাপশন (রিয়েলটাইমে চেঞ্জ হবে) */}
                 {post.caption && <p style={{ margin: '0 0 12px 0', color: '#374151', fontSize: '14px', lineHeight: '1.5' }}>{post.caption}</p>}
 
                 {/* Comment Section */}
                 <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '10px', marginTop: '10px' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '160px', overflowY: 'auto' }}>
-                    {visibleComments.map((c) => (
-                      <div key={c.id} style={{ fontSize: '13px', lineHeight: '1.4' }}>
-                        <strong style={{ color: '#111827', marginRight: '6px' }}>{c.name}</strong>
-                        <span style={{ color: '#4b5563' }}>{c.message}</span>
-                      </div>
-                    ))}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '220px', overflowY: 'auto' }}>
+                    {visibleComments.map((c) => {
+                      const isCommentLiked = !!likedCommentIds[c.id];
+                      const childReplies = comments.filter(r => r.parent_id === c.id);
+                      const directAdminReply = c.admin_reply || c.reply;
+
+                      return (
+                        <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', lineHeight: '1.4' }}>
+                            <div>
+                              <strong style={{ color: '#111827', marginRight: '6px' }}>{c.name}</strong>
+                              <span style={{ color: '#4b5563' }}>{c.message}</span>
+                            </div>
+
+                            <button
+                              onClick={() => handleToggleCommentLike(c.id, c.likes)}
+                              style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', color: isCommentLiked ? '#ff2d55' : '#9ca3af', fontSize: '12px' }}
+                            >
+                              <svg viewBox="0 0 24 24" width="14" height="14" fill={isCommentLiked ? "#ff2d55" : "none"} stroke={isCommentLiked ? "#ff2d55" : "currentColor"} strokeWidth="2">
+                                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                              </svg>
+                              <span>{c.likes || 0}</span>
+                            </button>
+                          </div>
+
+                          {directAdminReply && (
+                            <div style={{ marginLeft: '16px', paddingLeft: '8px', borderLeft: '2px solid #3b82f6', fontSize: '12px', color: '#1f2937', marginTop: '2px' }}>
+                              <span style={{ backgroundColor: '#dbeafe', color: '#1d4ed8', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold', marginRight: '6px', fontSize: '10px' }}>Admin</span>
+                              <span>{directAdminReply}</span>
+                            </div>
+                          )}
+
+                          {childReplies.map(reply => (
+                            <div key={reply.id} style={{ marginLeft: '16px', paddingLeft: '8px', borderLeft: '2px solid #3b82f6', fontSize: '12px', color: '#1f2937', marginTop: '2px' }}>
+                              <span style={{ backgroundColor: '#dbeafe', color: '#1d4ed8', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold', marginRight: '6px', fontSize: '10px' }}>
+                                {reply.is_admin ? 'Admin' : reply.name}
+                              </span>
+                              <span>{reply.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
                     {visibleComments.length === 0 && (
                       <span 
                         onClick={() => handleOpenCommentBox(post.id)}
