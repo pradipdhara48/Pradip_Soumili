@@ -160,13 +160,18 @@ export default function Auth() {
 
   // সুইচ পরিবর্তন করার সাথে সাথে স্বয়ংক্রিয়ভাবে ডাটাবেজে সেভ করার ফাংশন
   const handleInstantToggle = async (field, value) => {
-    const updatedConfig = { ...config, [field]: value };
+    const updatedConfig = { 
+      ...config, 
+      [field]: value,
+      last_indexed_at: lastIndexedTime || config.last_indexed_at || ''
+    };
     setConfig(updatedConfig);
     setToggleAutoSaving(true);
     try {
       const { error } = await supabase.from('site_settings').upsert({
         id: 'main_config',
-        ...updatedConfig
+        ...updatedConfig,
+        last_indexed_at: lastIndexedTime || config.last_indexed_at || ''
       });
       if (error) throw error;
     } catch (err) {
@@ -184,6 +189,8 @@ export default function Auth() {
     isPausedRef.current = false;
     isCancelledRef.current = false;
     recentDurationsRef.current = [];
+
+    const overallStartTime = Date.now();
 
     setIndexingStatus('Loading AI Face Models...');
     setIndexingProgress({ current: 0, total: 0 });
@@ -313,7 +320,18 @@ export default function Auth() {
         setIndexingProgress({ current: currentCount, total: totalPhotos });
       }
 
-      const nowTimestamp = new Date().toLocaleString('en-US', {
+      // Total time duration calculation
+      const totalTimeSeconds = Math.max(1, Math.round((Date.now() - overallStartTime) / 1000));
+      let durationString = '';
+      if (totalTimeSeconds >= 60) {
+        const m = Math.floor(totalTimeSeconds / 60);
+        const s = totalTimeSeconds % 60;
+        durationString = `${m}m ${s}s`;
+      } else {
+        durationString = `${totalTimeSeconds}s`;
+      }
+
+      const dateStr = new Date().toLocaleString('en-US', {
         day: '2-digit',
         month: 'short',
         year: 'numeric',
@@ -322,12 +340,28 @@ export default function Auth() {
         hour12: true
       });
 
-      setLastIndexedTime(nowTimestamp);
-      await supabase.from('site_settings').upsert({ id: 'main_config', ...config, last_indexed_at: nowTimestamp });
+      const fullTimeLabel = `${dateStr} (took ${durationString})`;
 
-      setIndexingStatus('Complete! All photos indexed successfully.');
+      setLastIndexedTime(fullTimeLabel);
+      setConfig(prev => ({ ...prev, last_indexed_at: fullTimeLabel }));
+
+      // সরাসরি নির্দিষ্ট কলামটি ডাটাবেজে আপডেট করা (যাতে রিফ্রেশেও টিকে থাকে)
+      const { error: saveErr } = await supabase
+        .from('site_settings')
+        .update({ last_indexed_at: fullTimeLabel })
+        .eq('id', 'main_config');
+
+      if (saveErr) {
+        await supabase.from('site_settings').upsert({ 
+          id: 'main_config', 
+          ...config, 
+          last_indexed_at: fullTimeLabel 
+        });
+      }
+
+      setIndexingStatus(`Complete! Indexed ${totalPhotos} photos in ${durationString}.`);
       setEstimatedRemainingTime('');
-      alert('All photos indexed successfully!');
+      alert(`All photos indexed successfully in ${durationString}!`);
     } catch (err) {
       alert('Indexing Error: ' + err.message);
     } finally {
@@ -545,7 +579,10 @@ export default function Auth() {
         enable_selfie_search: conf.enable_selfie_search ?? true,
         enable_journey_feed: conf.enable_journey_feed ?? true
       });
-      if (conf.last_indexed_at) setLastIndexedTime(conf.last_indexed_at);
+      // ডাটাবেজ থেকে সেভ থাকা টাইমটি নিশ্চিতভাবে লোড করা
+      if (conf.last_indexed_at) {
+        setLastIndexedTime(conf.last_indexed_at);
+      }
     }
     const { data: postData } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
     if (postData) setPosts(postData || []);
@@ -628,7 +665,11 @@ export default function Auth() {
   const handleSaveConfig = async (e) => {
     e.preventDefault();
     setSavingConfig(true);
-    const { error } = await supabase.from('site_settings').upsert({ id: 'main_config', ...config });
+    const { error } = await supabase.from('site_settings').upsert({ 
+      id: 'main_config', 
+      ...config,
+      last_indexed_at: lastIndexedTime || config.last_indexed_at || ''
+    });
     setSavingConfig(false);
     if (!error) alert('Website Details Updated Successfully.');
     else alert(error.message);
@@ -656,7 +697,11 @@ export default function Auth() {
       const { data: { publicUrl } } = supabase.storage.from('gallery-images').getPublicUrl(filePath);
       const newConfig = { ...config, [field]: publicUrl };
       setConfig(newConfig);
-      await supabase.from('site_settings').upsert({ id: 'main_config', ...newConfig });
+      await supabase.from('site_settings').upsert({ 
+        id: 'main_config', 
+        ...newConfig,
+        last_indexed_at: lastIndexedTime || config.last_indexed_at || ''
+      });
     } catch (err) { alert(err.message); } finally { setSavingConfig(false); }
   };
 
@@ -676,7 +721,11 @@ export default function Auth() {
       const newCards = [...(config.invitation_cards || []), publicUrl];
       const newConfig = { ...config, invitation_cards: newCards };
       setConfig(newConfig);
-      await supabase.from('site_settings').upsert({ id: 'main_config', ...newConfig });
+      await supabase.from('site_settings').upsert({ 
+        id: 'main_config', 
+        ...newConfig,
+        last_indexed_at: lastIndexedTime || config.last_indexed_at || ''
+      });
     } catch (err) { alert(err.message); } finally { setSavingConfig(false); }
   };
 
@@ -697,7 +746,11 @@ export default function Auth() {
       newCards[index] = publicUrl; 
       const newConfig = { ...config, invitation_cards: newCards };
       setConfig(newConfig);
-      await supabase.from('site_settings').upsert({ id: 'main_config', ...newConfig });
+      await supabase.from('site_settings').upsert({ 
+        id: 'main_config', 
+        ...newConfig,
+        last_indexed_at: lastIndexedTime || config.last_indexed_at || ''
+      });
     } catch (err) { alert(err.message); } finally { setSavingConfig(false); }
   };
 
@@ -706,7 +759,11 @@ export default function Auth() {
     const newCards = (config.invitation_cards || []).filter((_, i) => i !== index);
     const newConfig = { ...config, invitation_cards: newCards };
     setConfig(newConfig);
-    await supabase.from('site_settings').upsert({ id: 'main_config', ...newConfig });
+    await supabase.from('site_settings').upsert({ 
+      id: 'main_config', 
+      ...newConfig,
+      last_indexed_at: lastIndexedTime || config.last_indexed_at || ''
+    });
   };
 
   const handleStoryChange = (index, field, value) => {
@@ -928,9 +985,10 @@ export default function Auth() {
                     </p>
 
                     {lastIndexedTime && (
-                      <p className="text-[11px] text-gray-400 mt-2 font-mono">
-                        🕒 Last Updated: <span className="text-stone-200 font-semibold">{lastIndexedTime}</span>
-                      </p>
+                      <div className="mt-2.5 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-xs font-mono shadow-xs">
+                        <span>🕒</span>
+                        <span>Last Indexed: <strong>{lastIndexedTime}</strong></span>
+                      </div>
                     )}
 
                     {indexingStatus && (
@@ -1017,7 +1075,7 @@ export default function Auth() {
                   </p>
 
                   {lastIndexedTime && (
-                    <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium font-mono">
+                    <div className="mt-3 inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-mono shadow-xs">
                       <span>🕒</span>
                       <span>Last Indexed: <strong>{lastIndexedTime}</strong></span>
                     </div>
@@ -1419,7 +1477,7 @@ export default function Auth() {
                               }`}
                             >
                               <span>{isAdminLiked ? '❤️' : '🤍'}</span>
-                              <span>{comment.likes || 0} Likes</span>
+                              <span>Like ({comment.likes || 0})</span>
                             </button>
 
                             <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md border border-blue-200 font-mono">📱 {comment.device || 'Unknown'}</span>
