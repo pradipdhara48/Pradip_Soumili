@@ -142,9 +142,10 @@ async function runServerBackgroundIndexing() {
         const fileId = photo.drive_file_id || photo.id;
         
         const possibleUrls = [
-          photo.download_url,
+          `https://lh3.googleusercontent.com/d/${fileId}=s2048`,
           `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0&confirm=t`,
           `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
+          photo.download_url,
           photo.image_url
         ].filter(Boolean);
 
@@ -154,7 +155,7 @@ async function runServerBackgroundIndexing() {
             const imgRes = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
             if (imgRes.ok) {
               const arrayBuf = await imgRes.arrayBuffer();
-              if (arrayBuf && arrayBuf.byteLength > 1000) {
+              if (arrayBuf && arrayBuf.byteLength > 2000) {
                 imgBuffer = Buffer.from(arrayBuf);
                 break;
               }
@@ -162,24 +163,27 @@ async function runServerBackgroundIndexing() {
           } catch (e) {}
         }
 
-        if (!imgBuffer) continue;
+        if (!imgBuffer) {
+          console.warn(`Could not fetch image bytes for fileId: ${fileId}`);
+          continue;
+        }
 
         const img = await canvas.loadImage(imgBuffer);
 
-        // ১. প্রথমে স্বাভাবিক অবস্থায় ডিটেকশনের চেষ্টা
+        // অতি-সংবেদনশীল রেজোলিউশনে ফেস ডিটেকশন (inputSize: 1024, scoreThreshold: 0.02)
         let detections = await faceapi
-          .detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 800, scoreThreshold: 0.05 }))
+          .detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 1024, scoreThreshold: 0.02 }))
           .withFaceLandmarks()
           .withFaceDescriptors();
 
         if (!detections || detections.length === 0) {
           detections = await faceapi
-            .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.08 }))
+            .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.03 }))
             .withFaceLandmarks()
             .withFaceDescriptors();
         }
 
-        // ২. যদি সোজা অবস্থায় মুখ না পাওয়া যায়, তবে ছবি রোটেট (90°, 270°, 180°) করে স্ক্যান করা
+        // মাল্টি-অ্যাঙ্গেল রোটেশন চেক (90°, 270°, 180°)
         if (!detections || detections.length === 0) {
           const angles = [90, 270, 180];
           for (const angle of angles) {
@@ -194,9 +198,16 @@ async function runServerBackgroundIndexing() {
             rotCtx.drawImage(img, -img.width / 2, -img.height / 2);
 
             detections = await faceapi
-              .detectAllFaces(rotCanvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 800, scoreThreshold: 0.05 }))
+              .detectAllFaces(rotCanvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 1024, scoreThreshold: 0.02 }))
               .withFaceLandmarks()
               .withFaceDescriptors();
+
+            if (!detections || detections.length === 0) {
+              detections = await faceapi
+                .detectAllFaces(rotCanvas, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.03 }))
+                .withFaceLandmarks()
+                .withFaceDescriptors();
+            }
 
             if (detections && detections.length > 0) break;
           }

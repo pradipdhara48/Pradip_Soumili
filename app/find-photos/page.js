@@ -181,13 +181,13 @@ export default function FindPhotosPage() {
       await new Promise((r) => (selfieImg.onload = r));
 
       let userDetection = await faceapi
-        .detectSingleFace(selfieImg, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.40 }))
+        .detectSingleFace(selfieImg, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.15 }))
         .withFaceLandmarks()
         .withFaceDescriptor();
 
       if (!userDetection) {
         userDetection = await faceapi
-          .detectSingleFace(selfieImg, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.30 }))
+          .detectSingleFace(selfieImg, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.20 }))
           .withFaceLandmarks()
           .withFaceDescriptor();
       }
@@ -210,9 +210,7 @@ export default function FindPhotosPage() {
 
       const userDescriptor = userDetection.descriptor;
       const scoredMatches = [];
-
-      // 0.46 থ্রেশহোল্ড অন্য কোনো মেয়ের ছবি আসা বন্ধ করবে এবং অ্যাকুরেট ছবি আনবে
-      const STRICT_THRESHOLD = 0.46;
+      const MATCH_THRESHOLD = 0.60;
 
       for (const item of dbRecords) {
         let facesInPhoto = item.descriptors;
@@ -221,28 +219,35 @@ export default function FindPhotosPage() {
           try {
             facesInPhoto = JSON.parse(facesInPhoto);
           } catch (e) {
-            facesInPhoto = [];
+            continue;
           }
         }
 
-        if (!Array.isArray(facesInPhoto) || facesInPhoto.length === 0) continue;
+        if (!facesInPhoto) continue;
 
-        if (facesInPhoto.length === 128 && typeof facesInPhoto[0] === 'number') {
+        // যদি সিঙ্গেল ভেক্টর থাকে
+        if (Array.isArray(facesInPhoto) && facesInPhoto.length === 128 && typeof facesInPhoto[0] === 'number') {
           facesInPhoto = [facesInPhoto];
         }
+
+        if (!Array.isArray(facesInPhoto)) continue;
 
         let bestDistance = 1.0;
 
         for (const faceArr of facesInPhoto) {
-          if (!faceArr || !Array.isArray(faceArr) || faceArr.length !== 128) continue;
+          if (!faceArr) continue;
+          const parsedArr = Array.isArray(faceArr) ? faceArr : Object.values(faceArr);
+          if (parsedArr.length !== 128) continue;
 
-          const photoDescriptor = new Float32Array(faceArr);
+          const photoDescriptor = new Float32Array(parsedArr);
           const dist = faceapi.euclideanDistance(userDescriptor, photoDescriptor);
 
-          if (dist < bestDistance) bestDistance = dist;
+          if (dist < bestDistance) {
+            bestDistance = dist;
+          }
         }
 
-        if (bestDistance < STRICT_THRESHOLD) {
+        if (bestDistance < MATCH_THRESHOLD) {
           scoredMatches.push({ ...item, distance: bestDistance });
         }
       }
