@@ -99,7 +99,7 @@ export default function Auth() {
   const [replyInputs, setReplyInputs] = useState({});
   const [incomingAlert, setIncomingAlert] = useState(null);
 
-  // ইনডেক্সিং কন্ট্রোল স্টেট (Pause, Resume, Cancel, Timer)
+  // Indexing Control States
   const [isIndexing, setIsIndexing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [indexingStatus, setIndexingStatus] = useState('');
@@ -129,9 +129,12 @@ export default function Auth() {
     home_gallery_1: '', home_gallery_2: '', home_gallery_3: '',
     map_link: '', invitation_cards: [], whatsapp_number: '',
     about_image_1: '', about_image_2: '', hero_bg_image: '',
-    last_indexed_at: ''
+    last_indexed_at: '',
+    enable_selfie_search: true,
+    enable_journey_feed: true
   });
   const [savingConfig, setSavingConfig] = useState(false);
+  const [toggleAutoSaving, setToggleAutoSaving] = useState(false);
 
   const [posts, setPosts] = useState([]);
   const [file, setFile] = useState(null);
@@ -154,6 +157,26 @@ export default function Auth() {
   }, [isNotifDrawerOpen]);
 
   const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMPlGBUer9_Etg_UFWnCJ97dapbQBAdXsaWdL_Em_rexZFqmS5F2vxz2yOJMp4d_xNiA/exec';
+
+  // সুইচ পরিবর্তন করার সাথে সাথে স্বয়ংক্রিয়ভাবে ডাটাবেজে সেভ করার ফাংশন
+  const handleInstantToggle = async (field, value) => {
+    const updatedConfig = { ...config, [field]: value };
+    setConfig(updatedConfig);
+    setToggleAutoSaving(true);
+    try {
+      const { error } = await supabase.from('site_settings').upsert({
+        id: 'main_config',
+        ...updatedConfig
+      });
+      if (error) throw error;
+    } catch (err) {
+      alert('Failed to update toggle: ' + err.message);
+      // ব্যর্থ হলে আগের অবস্থায় ফিরিয়ে নেওয়া
+      setConfig(prev => ({ ...prev, [field]: !value }));
+    } finally {
+      setTimeout(() => setToggleAutoSaving(false), 800);
+    }
+  };
 
   const handleStartIndexing = async () => {
     setIsIndexing(true);
@@ -517,7 +540,11 @@ export default function Auth() {
   const fetchAllData = async () => {
     const { data: conf } = await supabase.from('site_settings').select('*').eq('id', 'main_config').single();
     if (conf) {
-      setConfig(conf);
+      setConfig({
+        ...conf,
+        enable_selfie_search: conf.enable_selfie_search ?? true,
+        enable_journey_feed: conf.enable_journey_feed ?? true
+      });
       if (conf.last_indexed_at) setLastIndexedTime(conf.last_indexed_at);
     }
     const { data: postData } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
@@ -1064,6 +1091,58 @@ export default function Auth() {
             {activeMenu === 'couple_hero' && (
               <form onSubmit={handleSaveConfig} className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm space-y-5 max-w-3xl">
                 <h3 className="text-base font-bold border-b pb-3 text-gray-800">Couple & Hero Section</h3>
+
+                {/* Public Buttons Access Control (Instant Auto-Save) */}
+                <div className="bg-amber-50/70 border border-amber-200 p-4 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-amber-900 uppercase">Public Gallery Buttons Access (On / Off)</h4>
+                      <p className="text-[11px] text-amber-700 mt-0.5">Toggle switches update immediately without needing to click Save.</p>
+                    </div>
+                    {toggleAutoSaving && (
+                      <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 animate-pulse">
+                        Updating...
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    {/* Find With Selfie Toggle */}
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-white border border-amber-200/80 shadow-2xs">
+                      <div>
+                        <p className="font-bold text-xs text-gray-800">Find With Selfie 📸</p>
+                        <p className="text-[10px] text-gray-500">{config.enable_selfie_search !== false ? 'Active' : 'Disabled (Coming Soon)'}</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={config.enable_selfie_search !== false}
+                          onChange={(e) => handleInstantToggle('enable_selfie_search', e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-10 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+                      </label>
+                    </div>
+
+                    {/* Our Journey Feed Toggle */}
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-white border border-amber-200/80 shadow-2xs">
+                      <div>
+                        <p className="font-bold text-xs text-gray-800">Our Journey Feed 💖</p>
+                        <p className="text-[10px] text-gray-500">{config.enable_journey_feed !== false ? 'Active' : 'Disabled (Coming Soon)'}</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={config.enable_journey_feed !== false}
+                          onChange={(e) => handleInstantToggle('enable_journey_feed', e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-10 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="bg-green-50 p-4 rounded-xl border border-green-100 mb-2">
                   <label className="text-xs font-bold text-green-800 uppercase flex items-center gap-2">WhatsApp Contact Number</label>
                   <input type="text" placeholder="+91 9876543210" value={config.whatsapp_number || ''} onChange={(e) => setConfig({ ...config, whatsapp_number: e.target.value })} className="w-full mt-2 p-2.5 border rounded-lg text-sm bg-white focus:outline-green-500" />

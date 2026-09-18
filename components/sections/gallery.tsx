@@ -23,6 +23,9 @@ export function Gallery() {
     { src: data?.home_gallery_3 || '/images/gallery-3.JPG', alt: 'Couple dancing under warm string lights' },
   ]
 
+  const isSelfieEnabled = data?.enable_selfie_search !== false
+  const isFeedEnabled = data?.enable_journey_feed !== false
+
   return (
     <section id="gallery" className="relative overflow-hidden py-24 md:py-32">
       <div className="mx-auto max-w-6xl px-6">
@@ -62,7 +65,7 @@ export function Gallery() {
             </Reveal>
           ))}
 
-          {/* ১. AI Selfie Photo Finder Card (Google Drive-এর জায়গায়) */}
+          {/* ১. AI Selfie Photo Finder Card */}
           <Reveal delay={0.3}>
             <div className="flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-accent/60 bg-secondary/60 p-5 text-center">
               <span className="mb-2 text-2xl">✨</span>
@@ -72,13 +75,26 @@ export function Gallery() {
               <p className="mt-1 text-[0.7rem] leading-relaxed text-muted-foreground">
                 {data?.drive_note || "Take a quick selfie to find every photo you appear in."}
               </p>
-              <Link
-                href="/find-photos"
-                className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-full border border-primary/40 bg-card px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] text-primary transition-all hover:bg-primary hover:text-primary-foreground hover:scale-105 cursor-pointer shadow-xs"
-              >
-                <span>Find with Selfie</span>
-                <span>📸</span>
-              </Link>
+
+              {isSelfieEnabled ? (
+                <Link
+                  href="/find-photos"
+                  className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-full border border-primary/40 bg-card px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] text-primary transition-all hover:bg-primary hover:text-primary-foreground hover:scale-105 cursor-pointer shadow-xs"
+                >
+                  <span>Find with Selfie</span>
+                  <span>📸</span>
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  title="Coming Soon"
+                  className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-full border border-border/50 bg-muted px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] text-muted-foreground cursor-not-allowed opacity-75 shadow-none"
+                >
+                  <span>Coming Soon</span>
+                  <span>🔒</span>
+                </button>
+              )}
             </div>
           </Reveal>
 
@@ -92,13 +108,26 @@ export function Gallery() {
               <p className="mt-1 text-[0.7rem] leading-relaxed text-muted-foreground">
                 Explore our daily moments, live updates & special captures.
               </p>
-              <Link
-                href="/gallery"
-                className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-full bg-primary px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] text-primary-foreground transition-all hover:opacity-90 hover:scale-105 cursor-pointer shadow-sm"
-              >
-                <span>Our Journey Feed</span>
-                <span>❤️</span>
-              </Link>
+
+              {isFeedEnabled ? (
+                <Link
+                  href="/gallery"
+                  className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-full bg-primary px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] text-primary-foreground transition-all hover:opacity-90 hover:scale-105 cursor-pointer shadow-sm"
+                >
+                  <span>Our Journey Feed</span>
+                  <span>❤️</span>
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  title="Coming Soon"
+                  className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-full bg-muted text-muted-foreground px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] cursor-not-allowed opacity-75 shadow-none border border-border/50"
+                >
+                  <span>Coming Soon</span>
+                  <span>🔒</span>
+                </button>
+              )}
             </div>
           </Reveal>
         </div>
@@ -106,3 +135,5 @@ export function Gallery() {
     </section>
   )
 }
+
+export default Gallery
