@@ -17,7 +17,6 @@ export function Gallery() {
     fetchData()
   }, [])
 
-  // অ্যাডমিন প্যানেল থেকে ছবি না পেলে আগের ডিফল্ট ছবিগুলো দেখাবে
   const galleryImages = [
     { src: data?.home_gallery_1 || '/images/gallery-1.png', alt: 'Wedding rings resting on blush roses' },
     { src: data?.home_gallery_2 || '/images/gallery-2.png', alt: 'Romantic candlelit reception table setting' },
@@ -63,39 +62,27 @@ export function Gallery() {
             </Reveal>
           ))}
 
-          {/* ১. Google Drive Card */}
+          {/* ১. AI Selfie Photo Finder Card (Google Drive-এর জায়গায়) */}
           <Reveal delay={0.3}>
             <div className="flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-accent/60 bg-secondary/60 p-5 text-center">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                className="mb-3 h-7 w-7 text-accent-foreground"
-                aria-hidden="true"
-              >
-                <path d="M12 2v4M12 18v4M2 12h4M18 12h4" strokeLinecap="round" />
-                <circle cx="12" cy="12" r="3.5" />
-              </svg>
+              <span className="mb-2 text-2xl">✨</span>
               <p className="font-serif text-lg italic text-foreground">
-                Photo Gallery
-                <br /> coming soon
+                Find Your Photos
               </p>
               <p className="mt-1 text-[0.7rem] leading-relaxed text-muted-foreground">
-                {data?.drive_note || "View all full-resolution photos from our celebration."}
+                {data?.drive_note || "Take a quick selfie to find every photo you appear in."}
               </p>
-              <a
-                href={data?.drive_link || "https://drive.google.com/drive/folders/1abkSLy25SXUmwJsCSg4Nl3_xGepx5iis?usp=sharing"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-3 inline-flex items-center justify-center rounded-full border border-primary/40 bg-card px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] text-primary transition-all hover:bg-primary hover:text-primary-foreground hover:scale-105 cursor-pointer"
+              <Link
+                href="/find-photos"
+                className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-full border border-primary/40 bg-card px-4 py-1.5 text-[0.65rem] font-medium uppercase tracking-[0.15em] text-primary transition-all hover:bg-primary hover:text-primary-foreground hover:scale-105 cursor-pointer shadow-xs"
               >
-                Google Drive Link
-              </a>
+                <span>Find with Selfie</span>
+                <span>📸</span>
+              </Link>
             </div>
           </Reveal>
 
-          {/* ২. Our Journey Feed Card */}
+          {/* ২. Moments & Stories Feed Card */}
           <Reveal delay={0.4}>
             <div className="flex aspect-square flex-col items-center justify-center rounded-lg border border-dashed border-accent/60 bg-secondary/60 p-5 text-center">
               <span className="mb-2 text-2xl">📸</span>

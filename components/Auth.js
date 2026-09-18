@@ -99,10 +99,20 @@ export default function Auth() {
   const [replyInputs, setReplyInputs] = useState({});
   const [incomingAlert, setIncomingAlert] = useState(null);
 
-  // অ্যাডমিন কমেন্ট লাইক ট্র্যাকিং স্টেট
+  // ইনডেক্সিং কন্ট্রোল স্টেট (Pause, Resume, Cancel, Timer)
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [indexingStatus, setIndexingStatus] = useState('');
+  const [indexingProgress, setIndexingProgress] = useState({ current: 0, total: 0 });
+  const [estimatedRemainingTime, setEstimatedRemainingTime] = useState('');
+  const [lastIndexedTime, setLastIndexedTime] = useState(null);
+
+  const isCancelledRef = useRef(false);
+  const isPausedRef = useRef(false);
+  const recentDurationsRef = useRef([]);
+
   const [adminLikedCommentIds, setAdminLikedCommentIds] = useState({});
 
-  // ক্যাপশন এডিট করার স্টেট
   const [editingCaptionId, setEditingCaptionId] = useState(null);
   const [captionDraft, setCaptionDraft] = useState('');
   const [savingCaption, setSavingCaption] = useState(false);
@@ -118,7 +128,8 @@ export default function Auth() {
     drive_note: '', drive_link: '', story: [],
     home_gallery_1: '', home_gallery_2: '', home_gallery_3: '',
     map_link: '', invitation_cards: [], whatsapp_number: '',
-    about_image_1: '', about_image_2: '', hero_bg_image: ''
+    about_image_1: '', about_image_2: '', hero_bg_image: '',
+    last_indexed_at: ''
   });
   const [savingConfig, setSavingConfig] = useState(false);
 
@@ -131,7 +142,6 @@ export default function Auth() {
   const [selectedTables, setSelectedTables] = useState([]);
   const [clearingDB, setClearingDB] = useState(false);
 
-  // মডাল ও ড্রয়ার স্টেট ট্র্যাকিং রেফারেন্স (যাতে useEffect dependency সাইজ স্থায়ী খালি [] থাকে)
   const selectedPostRef = useRef(selectedPostForDetail);
   const isNotifDrawerRef = useRef(isNotifDrawerOpen);
 
@@ -142,6 +152,189 @@ export default function Auth() {
   useEffect(() => {
     isNotifDrawerRef.current = isNotifDrawerOpen;
   }, [isNotifDrawerOpen]);
+
+  const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwMPlGBUer9_Etg_UFWnCJ97dapbQBAdXsaWdL_Em_rexZFqmS5F2vxz2yOJMp4d_xNiA/exec';
+
+  const handleStartIndexing = async () => {
+    setIsIndexing(true);
+    setIsPaused(false);
+    isPausedRef.current = false;
+    isCancelledRef.current = false;
+    recentDurationsRef.current = [];
+
+    setIndexingStatus('Loading AI Face Models...');
+    setIndexingProgress({ current: 0, total: 0 });
+    setEstimatedRemainingTime('Calculating accurate time...');
+
+    try {
+      const faceapi = await import('@vladmandic/face-api');
+      const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+      await Promise.all([
+        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+      ]);
+
+      if (isCancelledRef.current) return;
+
+      setIndexingStatus('Fetching Drive photos list...');
+      
+      let activeDriveLink = config.drive_link;
+      if (!activeDriveLink) {
+        const { data: conf } = await supabase.from('site_settings').select('drive_link').eq('id', 'main_config').single();
+        if (conf?.drive_link) activeDriveLink = conf.drive_link;
+      }
+
+      const folderId = activeDriveLink?.match(/folders\/([a-zA-Z0-9_-]+)/)?.[1] || activeDriveLink?.match(/id=([a-zA-Z0-9_-]+)/)?.[1];
+      const targetUrl = folderId ? `${GOOGLE_SCRIPT_URL}?folderId=${folderId}` : GOOGLE_SCRIPT_URL;
+
+      const res = await fetch(targetUrl);
+      const data = await res.json();
+      const drivePhotos = data.photos || [];
+
+      if (drivePhotos.length === 0) {
+        alert('No photos found in Google Drive folder.');
+        setIsIndexing(false);
+        setEstimatedRemainingTime('');
+        return;
+      }
+
+      if (isCancelledRef.current) return;
+
+      setIndexingStatus('Clearing old descriptors...');
+      await supabase.from('photo_descriptors').delete().neq('id', 'placeholder_id');
+
+      const totalPhotos = drivePhotos.length;
+      setIndexingProgress({ current: 0, total: totalPhotos });
+
+      for (let i = 0; i < totalPhotos; i++) {
+        if (isCancelledRef.current) {
+          setIndexingStatus('Indexing cancelled by admin.');
+          setEstimatedRemainingTime('');
+          setIsIndexing(false);
+          return;
+        }
+
+        while (isPausedRef.current) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          if (isCancelledRef.current) {
+            setIndexingStatus('Indexing cancelled by admin.');
+            setEstimatedRemainingTime('');
+            setIsIndexing(false);
+            return;
+          }
+        }
+
+        const photo = drivePhotos[i];
+        const currentCount = i + 1;
+        setIndexingStatus(`Indexing photo ${currentCount} of ${totalPhotos}...`);
+        const photoStartTime = Date.now();
+
+        try {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.src = photo.image_url;
+
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => {
+              img.src = `/api/proxy-image?fileId=${photo.drive_file_id || photo.id}`;
+              img.onload = resolve;
+              img.onerror = reject;
+            };
+          });
+
+          let detections = await faceapi
+            .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.15 }))
+            .withFaceLandmarks()
+            .withFaceDescriptors();
+
+          if (!detections || detections.length === 0) {
+            detections = await faceapi
+              .detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.12 }))
+              .withFaceLandmarks()
+              .withFaceDescriptors();
+          }
+
+          const descriptorsArray = (detections || []).map((det) => Array.from(det.descriptor));
+
+          await supabase.from('photo_descriptors').upsert({
+            id: photo.drive_file_id || photo.id,
+            drive_file_id: photo.drive_file_id || photo.id,
+            image_url: photo.image_url,
+            download_url: photo.download_url,
+            name: photo.name,
+            descriptors: descriptorsArray
+          });
+        } catch (e) {
+          console.warn('Skip photo index:', photo.id, e);
+        }
+
+        const photoDurationSec = (Date.now() - photoStartTime) / 1000;
+        recentDurationsRef.current.push(photoDurationSec);
+        if (recentDurationsRef.current.length > 5) recentDurationsRef.current.shift();
+
+        const rollingAvgTime = recentDurationsRef.current.reduce((a, b) => a + b, 0) / recentDurationsRef.current.length;
+        const remainingCount = totalPhotos - currentCount;
+        const totalEstimatedSeconds = Math.max(0, Math.round(remainingCount * rollingAvgTime));
+
+        if (totalEstimatedSeconds >= 60) {
+          const mins = Math.floor(totalEstimatedSeconds / 60);
+          const secs = totalEstimatedSeconds % 60;
+          setEstimatedRemainingTime(`~${mins}m ${secs}s left`);
+        } else {
+          setEstimatedRemainingTime(`~${totalEstimatedSeconds}s left`);
+        }
+
+        setIndexingProgress({ current: currentCount, total: totalPhotos });
+      }
+
+      const nowTimestamp = new Date().toLocaleString('en-US', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+
+      setLastIndexedTime(nowTimestamp);
+      await supabase.from('site_settings').upsert({ id: 'main_config', ...config, last_indexed_at: nowTimestamp });
+
+      setIndexingStatus('Complete! All photos indexed successfully.');
+      setEstimatedRemainingTime('');
+      alert('All photos indexed successfully!');
+    } catch (err) {
+      alert('Indexing Error: ' + err.message);
+    } finally {
+      setIsIndexing(false);
+      setIsPaused(false);
+      isPausedRef.current = false;
+      setIndexingStatus('');
+    }
+  };
+
+  const handleCancelIndexing = () => {
+    if (confirm('Cancel indexing process immediately?')) {
+      isCancelledRef.current = true;
+      isPausedRef.current = false;
+      setIsPaused(false);
+      setIndexingStatus('Stopping indexer...');
+    }
+  };
+
+  const handleTogglePauseIndexing = () => {
+    if (isPaused) {
+      isPausedRef.current = false;
+      setIsPaused(false);
+      setIndexingStatus('Resuming indexing...');
+    } else {
+      isPausedRef.current = true;
+      setIsPaused(true);
+      setIndexingStatus('Paused by user.');
+    }
+  };
 
   const registerDeviceForPush = async (userEmail) => {
     try {
@@ -174,7 +367,6 @@ export default function Auth() {
     } catch (err) {}
   };
 
-  // ব্রাউজার ব্যাক বাটন ও হ্যাশ নেভিগেশন হ্যান্ডলার (ডিপেন্ডেন্সি ছাড়া নিরাপদ)
   useEffect(() => {
     const hash = typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '';
     const savedMenu = localStorage.getItem('activeAdminMenu');
@@ -191,18 +383,15 @@ export default function Auth() {
     }
 
     const handlePopState = (event) => {
-      // যদি ছবি ডিটেইল মডাল খোলা থাকে, ব্যাক চাপলে শুধু মডাল বন্ধ হবে
       if (selectedPostRef.current) {
         setSelectedPostForDetail(null);
         return;
       }
-      // যদি নোটিফিকেশন ড্রয়ার খোলা থাকে, ব্যাক চাপলে ড্রয়ার বন্ধ হবে
       if (isNotifDrawerRef.current) {
         setIsNotifDrawerOpen(false);
         return;
       }
 
-      // হিস্ট্রি থেকে আগের মেনুতে ফিরে যাওয়া
       if (event.state && event.state.menu) {
         setActiveMenu(event.state.menu);
         localStorage.setItem('activeAdminMenu', event.state.menu);
@@ -269,7 +458,6 @@ export default function Auth() {
       }
     });
 
-    // ইন-অ্যাপ রিয়েলটাইম নোটিফিকেশন লিসেনার
     const notifChannel = supabase
       .channel('public:admin_notifications')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'admin_notifications' }, (payload) => {
@@ -280,7 +468,6 @@ export default function Auth() {
       })
       .subscribe();
 
-    // কমেন্ট রিয়েলটাইম লিসেনার
     const commentChannel = supabase
       .channel('public:comments_admin_sync')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, (payload) => {
@@ -297,7 +484,6 @@ export default function Auth() {
       })
       .subscribe();
 
-    // পোস্ট ও ফটো লাইক রিয়েলটাইম লিসেনার
     const postChannel = supabase
       .channel('public:posts_admin_sync')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, (payload) => {
@@ -330,7 +516,10 @@ export default function Auth() {
 
   const fetchAllData = async () => {
     const { data: conf } = await supabase.from('site_settings').select('*').eq('id', 'main_config').single();
-    if (conf) setConfig(conf);
+    if (conf) {
+      setConfig(conf);
+      if (conf.last_indexed_at) setLastIndexedTime(conf.last_indexed_at);
+    }
     const { data: postData } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
     if (postData) setPosts(postData || []);
     const { data: rsvpData } = await supabase.from('rsvps').select('*').order('created_at', { ascending: false });
@@ -358,7 +547,6 @@ export default function Auth() {
     }
   };
 
-  // অ্যাডমিন লাইক/ডিসলাইক টগল হ্যান্ডলার
   const handleCommentLikeToggle = async (commentId, currentLikes) => {
     const isLiked = Boolean(adminLikedCommentIds[commentId]);
     const newCount = isLiked ? Math.max(0, (currentLikes || 0) - 1) : (currentLikes || 0) + 1;
@@ -415,7 +603,7 @@ export default function Auth() {
     setSavingConfig(true);
     const { error } = await supabase.from('site_settings').upsert({ id: 'main_config', ...config });
     setSavingConfig(false);
-    if (!error) alert('Website Details Updated Successfully! 🎉');
+    if (!error) alert('Website Details Updated Successfully.');
     else alert(error.message);
   };
 
@@ -517,7 +705,7 @@ export default function Auth() {
       const { error: dbError } = await supabase.from('posts').insert([{ image_url: publicUrl, caption, likes: 0 }]);
       if (dbError) throw dbError;
       setCaption(''); setFile(null); e.target.reset(); fetchAllData();
-      alert('Photo Uploaded Successfully!');
+      alert('Photo Uploaded Successfully.');
     } catch (err) { alert(err.message); } finally { setUploading(false); }
   };
 
@@ -551,7 +739,7 @@ export default function Auth() {
       if (selectedTables.includes('rsvps')) await supabase.from('rsvps').delete().not('id', 'is', null);
       if (selectedTables.includes('comments')) await supabase.from('comments').delete().not('id', 'is', null);
 
-      alert("Selected databases cleared successfully!");
+      alert("Selected databases cleared successfully.");
       setSelectedTables([]); fetchAllData();
     } catch (err) { alert("Error: " + err.message); } finally { setClearingDB(false); }
   };
@@ -576,7 +764,7 @@ export default function Auth() {
     setLoading(false);
     if (error) setMessage(error.message);
     else {
-      alert('Password reset link has been sent to your email! Please check your inbox.');
+      alert('Password reset link has been sent to your email. Please check your inbox.');
       setIsResetMode(false);
     }
   };
@@ -588,14 +776,17 @@ export default function Auth() {
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     setUpdatingPassword(false);
     if (error) alert(error.message);
-    else { alert('Password updated successfully!'); setNewPassword(''); }
+    else { alert('Password updated successfully.'); setNewPassword(''); }
   };
 
   if (user) {
     const totalLikes = posts.reduce((acc, p) => acc + (p.likes || 0), 0);
-    const totalGuests = rsvps.reduce((acc, r) => acc + (r.guests_count || 1), 0);
     const formattedDateForInput = config.date ? config.date.slice(0, 16) : '';
     const unreadCount = notifications.filter(n => !n.is_read).length;
+
+    const currentCount = indexingProgress.current;
+    const totalCount = indexingProgress.total;
+    const percentage = totalCount > 0 ? Math.round((currentCount / totalCount) * 100) : 0;
 
     const postSpecificComments = selectedPostForDetail 
       ? adminComments.filter(c => c.post_id === selectedPostForDetail.id)
@@ -640,6 +831,7 @@ export default function Auth() {
             <nav className="p-4 space-y-1">
               <p className="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">Main Menu</p>
               <button onClick={() => handleMenuChange('overview')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'overview' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}>📊 Dashboard Overview</button>
+              <button onClick={() => handleMenuChange('indexing')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'indexing' ? 'bg-[#c29d68] text-white shadow-sm font-semibold' : 'text-amber-400/90 hover:bg-[#333a48]/50 hover:text-amber-300'}`}>⚡ Face Indexer (128-d)</button>
               <button onClick={() => handleMenuChange('couple_hero')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'couple_hero' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}>💑 Couple & Homepage</button>
               <button onClick={() => handleMenuChange('events')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'events' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}>📅 Ceremony & Reception</button>
               <button onClick={() => handleMenuChange('story')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${activeMenu === 'story' ? 'bg-[#333a48] text-white shadow-sm' : 'text-gray-400 hover:bg-[#333a48]/50 hover:text-white'}`}>📖 Our Love Story</button>
@@ -698,6 +890,59 @@ export default function Auth() {
           <main className="flex-1 overflow-y-auto p-4 sm:p-8 bg-[#f1f5f9]">
             {activeMenu === 'overview' && (
               <div className="space-y-6">
+                <div className="bg-gradient-to-r from-stone-900 to-[#1c2434] text-white p-6 rounded-2xl shadow-md border border-stone-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">⚡</span>
+                      <h3 className="font-bold text-base text-amber-300">Fast Face Indexing (128-d Vector)</h3>
+                    </div>
+                    <p className="text-xs text-gray-300 mt-1 max-w-xl">
+                      Scan Drive photos once and save 128-d vectors in the database so guests get instant 1-second selfie matches without loading.
+                    </p>
+
+                    {lastIndexedTime && (
+                      <p className="text-[11px] text-gray-400 mt-2 font-mono">
+                        🕒 Last Updated: <span className="text-stone-200 font-semibold">{lastIndexedTime}</span>
+                      </p>
+                    )}
+
+                    {indexingStatus && (
+                      <p className="text-xs font-semibold text-amber-400 mt-2">
+                        ● {indexingStatus} {totalCount > 0 && `(${currentCount}/${totalCount} • ${percentage}%)`}
+                        {estimatedRemainingTime && <span className="ml-2 text-stone-300 font-normal">⏱️ {estimatedRemainingTime}</span>}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {!isIndexing ? (
+                      <button
+                        type="button"
+                        onClick={handleStartIndexing}
+                        className="px-5 py-2.5 rounded-xl bg-[#c29d68] hover:bg-[#b08b56] text-white text-xs font-bold transition shadow cursor-pointer active:scale-95"
+                      >
+                        Index Faces to DB
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleTogglePauseIndexing}
+                          className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition shadow cursor-pointer active:scale-95"
+                        >
+                          {isPaused ? '▶ Resume' : '⏸ Pause'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelIndexing}
+                          className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition shadow cursor-pointer active:scale-95"
+                        >
+                          ⏹ Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
                   <div onClick={() => handleMenuChange('gallery')} className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-blue-300 transition group">
                     <div>
@@ -731,6 +976,88 @@ export default function Auth() {
                     <span className="text-2xl p-3 bg-indigo-50 group-hover:bg-indigo-100 rounded-xl transition">💬</span>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {activeMenu === 'indexing' && (
+              <div className="bg-white p-6 sm:p-8 rounded-2xl border border-gray-100 shadow-sm max-w-2xl space-y-6">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <span>⚡</span> Face Descriptor Indexing
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+                    Click this button after uploading new photos to Drive. The system extracts 128-d face descriptor vectors and saves them to Supabase.
+                  </p>
+
+                  {lastIndexedTime && (
+                    <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium font-mono">
+                      <span>🕒</span>
+                      <span>Last Indexed: <strong>{lastIndexedTime}</strong></span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-800 space-y-1">
+                  <p className="font-semibold">💡 Controls:</p>
+                  <p>• <strong>Pause / Resume:</strong> Pause the indexing anytime and resume later.</p>
+                  <p>• <strong>Cancel:</strong> Stop the indexing process instantly.</p>
+                </div>
+
+                <div className="pt-2 flex flex-wrap items-center gap-3">
+                  {!isIndexing ? (
+                    <button
+                      type="button"
+                      onClick={handleStartIndexing}
+                      className="w-full sm:w-auto px-8 py-3 bg-[#c29d68] hover:bg-[#b08b56] text-white text-xs font-bold rounded-xl shadow-md transition cursor-pointer active:scale-95"
+                    >
+                      Start Auto-Indexing Now
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleTogglePauseIndexing}
+                        className="px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition shadow-md cursor-pointer active:scale-95"
+                      >
+                        {isPaused ? '▶ Resume Indexing' : '⏸ Pause Indexing'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCancelIndexing}
+                        className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition shadow-md cursor-pointer active:scale-95"
+                      >
+                        ⏹ Cancel Indexing
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {(indexingStatus || isIndexing) && (
+                  <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 text-xs space-y-3">
+                    <div className="flex items-center justify-between font-medium text-gray-700">
+                      <span className="font-bold text-amber-700">{percentage}% Completed</span>
+                      {totalCount > 0 && (
+                        <span>{currentCount} / {totalCount} Photos Indexed</span>
+                      )}
+                    </div>
+
+                    <div className="w-full h-2.5 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-[#c29d68] to-amber-500 transition-all duration-300"
+                        style={{ width: `${percentage}%` }}
+                      />
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                      <p className="font-semibold text-gray-800">{indexingStatus}</p>
+                      {estimatedRemainingTime && (
+                        <p className="font-mono text-amber-700 font-semibold bg-amber-100/70 px-2.5 py-1 rounded border border-amber-200 self-start sm:self-auto">
+                          ⏱️ {estimatedRemainingTime}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -820,7 +1147,7 @@ export default function Auth() {
                   <input type="text" placeholder="https://maps.app.goo.gl/..." value={config.map_link || ''} onChange={(e) => setConfig({ ...config, map_link: e.target.value })} className="w-full mt-1 p-2.5 border rounded-lg text-sm bg-gray-50" />
                 </div>
                 <div className="p-4 bg-gray-50 rounded-xl border space-y-3"><h4 className="font-bold text-sm text-blue-600">The Ceremony</h4><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><input type="text" placeholder="Title" value={config.ceremony_title || ''} onChange={(e) => setConfig({ ...config, ceremony_title: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Time" value={config.ceremony_time || ''} onChange={(e) => setConfig({ ...config, ceremony_time: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /></div><input type="text" placeholder="Venue Name" value={config.ceremony_venue || ''} onChange={(e) => setConfig({ ...config, ceremony_venue: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Address" value={config.ceremony_address || ''} onChange={(e) => setConfig({ ...config, ceremony_address: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /></div>
-                <div className="p-4 bg-gray-50 rounded-xl border space-y-3"><h4 className="font-bold text-sm text-indigo-600">The Reception</h4><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><input type="text" placeholder="Title" value={config.reception_title || ''} onChange={(e) => setConfig({ ...config, reception_title: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Time" value={config.reception_time || ''} onChange={(e) => setConfig({ ...config, reception_time: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /></div><input type="text" placeholder="Venue Name" value={config.reception_venue || ''} onChange={(e) => setConfig({ ...config, reception_venue: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Address" value={config.reception_address || ''} onChange={(e) => setConfig({ ...config, reception_address: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /></div>
+                <div className="p-4 bg-gray-50 rounded-xl border space-y-3"><h4 className="font-bold text-indigo-600 text-sm">The Reception</h4><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><input type="text" placeholder="Title" value={config.reception_title || ''} onChange={(e) => setConfig({ ...config, reception_title: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Time" value={config.reception_time || ''} onChange={(e) => setConfig({ ...config, reception_time: e.target.value })} className="p-2 border rounded-lg text-xs bg-white" /></div><input type="text" placeholder="Venue Name" value={config.reception_venue || ''} onChange={(e) => setConfig({ ...config, reception_venue: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /><input type="text" placeholder="Address" value={config.reception_address || ''} onChange={(e) => setConfig({ ...config, reception_address: e.target.value })} className="w-full p-2 border rounded-lg text-xs bg-white" /></div>
                 
                 <div className="mt-6 pt-5 border-t border-gray-100">
                   <div className="flex items-center justify-between mb-4">

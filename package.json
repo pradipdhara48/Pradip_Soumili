@@ -12,6 +12,8 @@
     "@emailjs/browser": "^4.4.1",
     "@supabase/supabase-js": "^2.112.4",
     "@vercel/analytics": "1.6.1",
+    "@vladmandic/face-api": "^1.7.15",
+    "canvas": "^3.2.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^13.1.1",
